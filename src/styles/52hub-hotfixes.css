@@ -1,0 +1,11 @@
+/*
+ * 52Hub source-hardened CSS hotfixes.
+ * Imported from main.ts, applied AFTER the upstream Tailwind build.
+ * Originally accumulated as docker-cp hotfixes; consolidated 2026-05-07.
+ */
+
+/* 52Hub admin brand hotfix: hide upstream GitHub footer link. */
+a[href*="github.com/dujiao-next"] {
+  display: none !important;
+}
+

@@ -1,14 +1,22 @@
 export function getImageUrl(path: string | undefined | null): string {
   if (!path) return ''
 
-  if (path.startsWith('http://') || path.startsWith('https://')) {
+  if (
+    path.startsWith('http://') ||
+    path.startsWith('https://') ||
+    path.startsWith('data:') ||
+    path.startsWith('blob:')
+  ) {
     return path
   }
 
-  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || ''
+  const origin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : ''
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
 
-  return `${apiBaseUrl}${normalizedPath}`
+  return `${origin}${normalizedPath}`
 }
 
 export function getFirstImageUrl(images: any): string {
