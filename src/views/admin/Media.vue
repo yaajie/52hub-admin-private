@@ -7,15 +7,17 @@ import type { AdminMedia } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import ListPagination from '@/components/ListPagination.vue'
 import { getImageUrl } from '@/utils/image'
 import { notifyError, notifySuccess } from '@/utils/notify'
 import { confirmAction } from '@/utils/confirm'
+import FileInput from '@/components/FileInput.vue'
+import { DEFAULT_UPLOAD_MAX_SIZE_BYTES, formatFileSizeLimit, splitFilesBySize } from '@/utils/upload'
 
 const { t } = useI18n()
 const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref({ current: 0, total: 0 })
-const fileInput = ref<HTMLInputElement | null>(null)
 
 const items = ref<AdminMedia[]>([])
 const pagination = reactive({
@@ -24,8 +26,6 @@ const pagination = reactive({
   total: 0,
   total_page: 0,
 })
-const jumpPage = ref('')
-
 const filters = reactive({
   search: '',
   scene: '__all__',
@@ -75,13 +75,12 @@ function changePage(page: number) {
   fetchMedia(page)
 }
 
-function jumpToPage() {
-  const raw = parseInt(jumpPage.value, 10)
-  if (isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.total_page)
-  if (target === pagination.page) return
-  fetchMedia(target)
-  jumpPage.value = ''
+const pageSizeOptions = [10, 20, 50, 100]
+
+function changePageSize(size: number) {
+  if (size === pagination.page_size) return
+  pagination.page_size = size
+  fetchMedia(1)
 }
 
 const debouncedFetch = useDebounceFn(() => fetchMedia(1), 300)
@@ -95,19 +94,22 @@ function formatFileSize(bytes: number): string {
 }
 
 // Upload
-function triggerUpload() {
-  fileInput.value?.click()
-}
-
-async function handleFileChange(e: Event) {
-  const files = (e.target as HTMLInputElement).files
+async function handleFileChange(files: FileList | null) {
   if (!files || files.length === 0) return
+  const { accepted: fileList, rejected } = splitFilesBySize(Array.from(files))
+  if (rejected.length > 0) {
+    notifyError(t('admin.media.errors.fileTooLarge', {
+      count: rejected.length,
+      max: formatFileSizeLimit(DEFAULT_UPLOAD_MAX_SIZE_BYTES),
+    }))
+  }
+  if (fileList.length === 0) return
+
   uploading.value = true
-  const total = files.length
+  const total = fileList.length
   uploadProgress.value = { current: 0, total }
   let failCount = 0
 
-  const fileList = Array.from(files)
   for (let i = 0; i < fileList.length; i += 3) {
     const batch = fileList.slice(i, i + 3)
     await Promise.allSettled(batch.map(async (file) => {
@@ -130,7 +132,6 @@ async function handleFileChange(e: Event) {
   }
   fetchMedia(1)
   uploading.value = false
-  if (fileInput.value) fileInput.value.value = ''
 }
 
 // Inline rename
@@ -188,10 +189,13 @@ onMounted(() => fetchMedia(1))
     <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-4">
       <h1 class="text-2xl font-bold">{{ t('admin.media.title') }}</h1>
-      <Button @click="triggerUpload" :disabled="uploading">
-        {{ uploading ? t('admin.media.uploadProgress', uploadProgress) : t('admin.media.uploadNew') }}
-      </Button>
-      <input ref="fileInput" type="file" class="hidden" accept="image/*" multiple @change="handleFileChange" />
+      <FileInput
+        accept="image/*"
+        :multiple="true"
+        :disabled="uploading"
+        :button-text="uploading ? t('admin.media.uploadProgress', uploadProgress) : t('admin.media.uploadNew')"
+        @change="handleFileChange"
+      />
     </div>
 
     <!-- Filters -->
@@ -270,20 +274,14 @@ onMounted(() => fetchMedia(1))
     </div>
 
     <!-- Pagination -->
-    <div v-if="pagination.total_page > 1" class="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-      <span class="text-xs text-muted-foreground">
-        {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-      </span>
-      <div class="flex flex-wrap items-center gap-2">
-        <Input v-model="jumpPage" type="number" min="1" :max="pagination.total_page" class="h-8 w-20" :placeholder="t('admin.common.jumpPlaceholder')" />
-        <Button variant="outline" size="sm" class="h-8" @click="jumpToPage">{{ t('admin.common.jumpTo') }}</Button>
-        <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-          {{ t('admin.common.prevPage') }}
-        </Button>
-        <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page >= pagination.total_page" @click="changePage(pagination.page + 1)">
-          {{ t('admin.common.nextPage') }}
-        </Button>
-      </div>
-    </div>
+    <ListPagination
+      :page="pagination.page"
+      :total-page="pagination.total_page"
+      :total="pagination.total"
+      :page-size="pagination.page_size"
+      :page-size-options="pageSizeOptions"
+      @change-page="changePage"
+      @change-page-size="changePageSize"
+    />
   </div>
 </template>

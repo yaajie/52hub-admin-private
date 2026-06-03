@@ -8,12 +8,16 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { paymentStatusClass, paymentStatusLabel } from '@/utils/status'
 import { formatDate, toRFC3339 } from '@/utils/format'
+import ComplianceGuardWrapper from '@/components/ComplianceGuardWrapper.vue'
 
 const { t } = useI18n()
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const recharges = ref<AdminWalletRecharge[]>([])
 const pagination = ref({
   page: 1,
@@ -21,7 +25,6 @@ const pagination = ref({
   total: 0,
   total_page: 1,
 })
-const jumpPage = ref('')
 const adminPath = import.meta.env.VITE_ADMIN_PATH || ''
 
 const filters = reactive({
@@ -40,8 +43,8 @@ const filters = reactive({
 
 const normalizeFilterValue = (value: string) => (value === '__all__' ? '' : value)
 
-const fetchRecharges = async (page = 1) => {
-  loading.value = true
+const fetchRecharges = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   try {
     const response = await adminAPI.getWalletRecharges({
       page,
@@ -61,9 +64,9 @@ const fetchRecharges = async (page = 1) => {
     recharges.value = response.data.data || []
     pagination.value = response.data.pagination || pagination.value
   } catch (error) {
-    recharges.value = []
+    if (!options.preserveRows) recharges.value = []
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
@@ -73,7 +76,7 @@ const handleSearch = () => {
 const debouncedSearch = useDebounceFn(handleSearch, 300)
 
 const refresh = () => {
-  fetchRecharges(pagination.value.page)
+  refreshList(() => fetchRecharges(pagination.value.page, { preserveRows: true }))
 }
 
 const changePage = (page: number) => {
@@ -81,13 +84,12 @@ const changePage = (page: number) => {
   fetchRecharges(page)
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.value.total_page)
-  if (target === pagination.value.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.value.page_size) return
+  pagination.value.page_size = size
+  fetchRecharges(1)
 }
 
 const userLink = (userID: number) => `${adminPath}/users/${userID}`
@@ -132,6 +134,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <ComplianceGuardWrapper>
   <div class="space-y-6">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h1 class="text-2xl font-semibold">{{ t('admin.walletRecharges.title') }}</h1>
@@ -220,7 +223,7 @@ onMounted(() => {
           />
         </div>
         <div class="hidden flex-1 sm:block"></div>
-        <Button size="sm" variant="outline" class="w-full sm:w-auto" @click="refresh">{{ t('admin.common.refresh') }}</Button>
+        <Button size="sm" variant="outline" class="w-full sm:w-auto" :disabled="refreshing" @click="refresh">{{ t('admin.common.refresh') }}</Button>
       </div>
     </div>
 
@@ -305,39 +308,16 @@ onMounted(() => {
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-wrap items-center justify-between gap-3 border-t border-border px-6 py-4"
-      >
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">
-            {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-          </span>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="flex items-center gap-2">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex items-center gap-2">
-            <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page >= pagination.total_page" @click="changePage(pagination.page + 1)">
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
   </div>
+  </ComplianceGuardWrapper>
 </template>

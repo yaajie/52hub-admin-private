@@ -4,7 +4,9 @@ import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { AdminProductMapping, AdminSiteConnection, AdminCategory, AdminProduct, AdminProductSKU } from '@/api/types'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
 import { Dialog, DialogScrollContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { confirmAction } from '@/utils/confirm'
@@ -12,9 +14,12 @@ import { notifyError, notifySuccess } from '@/utils/notify'
 import { getLocalizedText } from '@/utils/format'
 import { buildAdminCategoryPath, createAdminCategoryChildCountMap, createAdminCategoryMap, flattenAdminCategories, isAdminProductCategorySelectable } from '@/utils/category'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 
 const { t } = useI18n()
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const mappings = ref<(AdminProductMapping & { product?: AdminProduct })[]>([])
 const connections = ref<AdminSiteConnection[]>([])
 const categories = ref<AdminCategory[]>([])
@@ -25,7 +30,6 @@ const categoryOptions = computed(() => flattenAdminCategories(categories.value).
   selectable: isAdminProductCategorySelectable(item.category, categoryChildCountMap.value),
 })))
 const pagination = reactive({ page: 1, page_size: 20, total: 0, total_page: 1 })
-const jumpPage = ref('')
 const filters = reactive({ connection_id: '__all__' })
 const syncingId = ref<number | null>(null)
 
@@ -210,8 +214,8 @@ const fetchCategories = async () => {
   } catch { categories.value = [] }
 }
 
-const fetchMappings = async (page = 1) => {
-  loading.value = true
+const fetchMappings = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   expandedMappingId.value = null
   detailData.value = null
   selectedMappingIds.value = new Set()
@@ -224,17 +228,25 @@ const fetchMappings = async (page = 1) => {
     mappings.value = (res.data.data as (AdminProductMapping & { product?: AdminProduct })[]) || []
     const p = res.data.pagination
     if (p) { pagination.page = p.page; pagination.page_size = p.page_size; pagination.total = p.total; pagination.total_page = p.total_page }
-  } catch { mappings.value = [] } finally { loading.value = false }
+  } catch {
+    if (!options.preserveRows) mappings.value = []
+  } finally {
+    if (!options.preserveRows) loading.value = false
+  }
+}
+
+const refresh = () => {
+  refreshList(() => fetchMappings(pagination.page, { preserveRows: true }))
 }
 
 const changePage = (page: number) => { if (page >= 1 && page <= pagination.total_page) fetchMappings(page) }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.total_page)
-  if (target !== pagination.page) changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.page_size) return
+  pagination.page_size = size
+  fetchMappings(1)
 }
 
 const handleFilterChange = () => fetchMappings(1)
@@ -516,15 +528,14 @@ const toggleCategoryExpand = (catId: number) => {
   expandedCategoryIds.value = s
 }
 
-const selectAllInCategory = (catId: number) => {
+const selectAllInCategory = (catId: number, v: boolean | 'indeterminate') => {
   const products = productsByCategory.value.get(catId) || []
   const s = new Set(selectedProductIds.value)
   const nonMapped = products.filter(p => !mappedUpstreamIds.value.has(p.id))
-  const allSelected = nonMapped.every(p => s.has(p.id))
-  if (allSelected) {
-    for (const p of nonMapped) s.delete(p.id)
-  } else {
+  if (v === true) {
     for (const p of nonMapped) s.add(p.id)
+  } else {
+    for (const p of nonMapped) s.delete(p.id)
   }
   selectedProductIds.value = s
 }
@@ -654,7 +665,7 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h1 class="text-2xl font-semibold">{{ t('productMappings.title') }}</h1>
       <div class="flex w-full gap-2 sm:w-auto">
-        <Button variant="outline" class="w-full sm:w-auto" :disabled="loading" @click="fetchMappings(pagination.page)">{{ t('productMappings.refresh') }}</Button>
+        <Button variant="outline" class="w-full sm:w-auto" :disabled="refreshing" @click="refresh">{{ t('productMappings.refresh') }}</Button>
         <Button class="w-full sm:w-auto" @click="openImportModal">{{ t('productMappings.importButton') }}</Button>
       </div>
     </div>
@@ -695,7 +706,7 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
         {{ t('productMappings.empty') }}
       </div>
       <div v-if="!loading && mappings.length > 0" class="flex items-center gap-2 px-1">
-        <input type="checkbox" :checked="allMappingsSelected" :indeterminate="selectedMappingIds.size > 0 && !allMappingsSelected" class="h-4 w-4 rounded border-border accent-primary cursor-pointer" @change="toggleAllMappings" />
+        <Checkbox :model-value="allMappingsSelected ? true : (selectedMappingIds.size > 0 ? 'indeterminate' : false)" @update:model-value="toggleAllMappings" />
         <span class="text-xs text-muted-foreground">{{ t('productMappings.batch.selectAll') }}</span>
       </div>
 
@@ -711,7 +722,9 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
           @click="toggleMappingExpand(mapping)"
         >
           <!-- Checkbox -->
-          <input type="checkbox" :checked="selectedMappingIds.has(mapping.id)" class="h-4 w-4 shrink-0 rounded border-border accent-primary cursor-pointer" @click.stop="toggleMappingSelect(mapping.id)" />
+          <div @click.stop>
+            <Checkbox :model-value="selectedMappingIds.has(mapping.id)" @update:model-value="() => toggleMappingSelect(mapping.id)" />
+          </div>
           <!-- Expand arrow -->
           <svg
             class="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200"
@@ -731,6 +744,18 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
                 :class="mapping.is_active ? 'text-emerald-700 border-emerald-200 bg-emerald-50' : 'text-muted-foreground border-border bg-muted/30'"
               >
                 {{ mapping.is_active ? t('productMappings.status.active') : t('productMappings.status.inactive') }}
+              </span>
+              <span
+                v-if="mapping.upstream_status === 'inactive'"
+                class="shrink-0 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700"
+              >
+                {{ t('productMappings.upstreamStatus.inactive') }}
+              </span>
+              <span
+                v-else-if="mapping.upstream_status === 'deleted'"
+                class="shrink-0 inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] text-red-700"
+              >
+                {{ t('productMappings.upstreamStatus.deleted') }}
               </span>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -861,17 +886,15 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
       </div>
 
       <!-- Pagination -->
-      <div v-if="pagination.total_page > 1" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-6 py-4">
-        <span class="text-xs text-muted-foreground">
-          {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-        </span>
-        <div class="flex flex-wrap items-center gap-2">
-          <Input v-model="jumpPage" type="number" min="1" :max="pagination.total_page" class="h-8 w-20" :placeholder="t('admin.common.jumpPlaceholder')" />
-          <Button variant="outline" size="sm" class="h-8" @click="jumpToPage">{{ t('admin.common.jumpTo') }}</Button>
-          <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">{{ t('admin.common.prevPage') }}</Button>
-          <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page >= pagination.total_page" @click="changePage(pagination.page + 1)">{{ t('admin.common.nextPage') }}</Button>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <!-- Import Dialog -->
@@ -910,8 +933,8 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
           <!-- Category options: auto-create + local category selector -->
           <div v-if="importConnectionId" class="flex flex-col gap-4 lg:flex-row lg:items-end">
             <div v-if="importViewMode === 'category' && upstreamCategoriesSupported" class="flex items-center gap-2">
-              <input id="auto-create-cat" type="checkbox" v-model="autoCreateCategory" class="h-4 w-4 rounded border-border accent-primary cursor-pointer" />
-              <label for="auto-create-cat" class="text-xs font-medium text-muted-foreground cursor-pointer">{{ t('productMappings.import.autoCreateCategory') }}</label>
+              <Switch id="auto-create-cat" v-model="autoCreateCategory" />
+              <Label for="auto-create-cat" class="text-xs font-medium text-muted-foreground cursor-pointer">{{ t('productMappings.import.autoCreateCategory') }}</Label>
             </div>
             <div v-if="!autoCreateCategory || importViewMode === 'flat'" class="min-w-[200px] flex-1">
               <label class="mb-1.5 block text-xs font-medium text-muted-foreground">{{ t('productMappings.import.category') }}</label>
@@ -951,11 +974,9 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
                     <span v-if="catItem.nonMappedCount < catItem.productCount" class="ml-1 text-xs text-amber-600">({{ catItem.productCount - catItem.nonMappedCount }} {{ t('productMappings.import.alreadyMapped') }})</span>
                   </div>
                   <div class="flex items-center gap-2 shrink-0" @click.stop>
-                    <input
-                      type="checkbox"
-                      :checked="isCategoryAllSelected(catItem.category.id)"
-                      class="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                      @change="selectAllInCategory(catItem.category.id)"
+                    <Checkbox
+                      :model-value="isCategoryAllSelected(catItem.category.id)"
+                      @update:model-value="(v) => selectAllInCategory(catItem.category.id, v)"
                     />
                     <Button
                       size="sm"
@@ -976,7 +997,9 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
                     :class="[selectedProductIds.has(product.id) ? 'bg-primary/5' : '', mappedUpstreamIds.has(product.id) ? 'opacity-50' : '']"
                   >
                     <div class="flex items-center gap-3 px-4 pl-11 py-2.5" :class="mappedUpstreamIds.has(product.id) ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-muted/20'" @click="toggleProduct(product.id)">
-                      <input type="checkbox" :checked="selectedProductIds.has(product.id)" :disabled="mappedUpstreamIds.has(product.id)" class="h-4 w-4 shrink-0 rounded border-border accent-primary" :class="mappedUpstreamIds.has(product.id) ? 'cursor-not-allowed' : 'cursor-pointer'" @click.stop="toggleProduct(product.id)" />
+                      <div @click.stop>
+                        <Checkbox :model-value="selectedProductIds.has(product.id)" :disabled="mappedUpstreamIds.has(product.id)" @update:model-value="() => toggleProduct(product.id)" />
+                      </div>
                       <div class="min-w-0 flex-1">
                         <div class="flex flex-wrap items-center gap-2">
                           <span class="break-words text-sm text-foreground sm:truncate">{{ getLocalizedText(product.title) }}</span>
@@ -1016,13 +1039,15 @@ onMounted(() => { fetchConnections(); fetchCategories(); fetchMappings() })
             <div v-else-if="upstreamProducts.length === 0" class="px-6 py-12 text-center text-sm text-muted-foreground">{{ t('productMappings.import.noUpstreamProducts') }}</div>
             <div v-else>
               <div class="flex items-center gap-3 border-b border-border bg-muted/40 px-4 py-2.5">
-                <input type="checkbox" :checked="allSelected" :indeterminate="selectedProductIds.size > 0 && !allSelected" class="h-4 w-4 rounded border-border accent-primary cursor-pointer" @change="toggleSelectAll" />
+                <Checkbox :model-value="allSelected ? true : (selectedProductIds.size > 0 ? 'indeterminate' : false)" @update:model-value="toggleSelectAll" />
                 <span class="text-xs font-medium text-muted-foreground">{{ t('productMappings.import.selectAll') }} ({{ upstreamProducts.length }}/{{ upstreamTotal }})</span>
               </div>
               <div class="divide-y divide-border max-h-[50vh] overflow-y-auto">
                 <div v-for="product in upstreamProducts" :key="product.id" class="transition-colors" :class="[selectedProductIds.has(product.id) ? 'bg-primary/5' : '', mappedUpstreamIds.has(product.id) ? 'opacity-50' : '']">
                   <div class="flex items-center gap-3 px-4 py-3" :class="mappedUpstreamIds.has(product.id) ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-muted/20'" @click="toggleProduct(product.id)">
-                    <input type="checkbox" :checked="selectedProductIds.has(product.id)" :disabled="mappedUpstreamIds.has(product.id)" class="h-4 w-4 shrink-0 rounded border-border accent-primary" :class="mappedUpstreamIds.has(product.id) ? 'cursor-not-allowed' : 'cursor-pointer'" @click.stop="toggleProduct(product.id)" />
+                    <div @click.stop>
+                      <Checkbox :model-value="selectedProductIds.has(product.id)" :disabled="mappedUpstreamIds.has(product.id)" @update:model-value="() => toggleProduct(product.id)" />
+                    </div>
                     <div class="min-w-0 flex-1">
                       <div class="flex flex-wrap items-center gap-2">
                         <span class="break-words text-sm font-medium text-foreground sm:truncate">{{ getLocalizedText(product.title) }}</span>

@@ -7,14 +7,17 @@ import type { AdminPaymentChannel } from '@/api/types'
 import { getImageUrl } from '@/utils/image'
 import IdCell from '@/components/IdCell.vue'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { confirmAction } from '@/utils/confirm'
 import PaymentChannelModal from './components/PaymentChannelModal.vue'
+import ComplianceGuardWrapper from '@/components/ComplianceGuardWrapper.vue'
 
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const channels = ref<AdminPaymentChannel[]>([])
 const pagination = ref({
   page: 1,
@@ -22,7 +25,6 @@ const pagination = ref({
   total: 0,
   total_page: 1,
 })
-const jumpPage = ref('')
 const filters = reactive({
   providerType: '__all__',
   channelType: '__all__',
@@ -34,8 +36,8 @@ const showModal = ref(false)
 const editingId = ref<number | null>(null)
 const { t } = useI18n()
 
-const fetchChannels = async (page = 1) => {
-  loading.value = true
+const fetchChannels = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   try {
     const response = await adminAPI.getPaymentChannels({
       page,
@@ -46,9 +48,9 @@ const fetchChannels = async (page = 1) => {
     channels.value = response.data.data || []
     pagination.value = response.data.pagination || pagination.value
   } catch (error) {
-    channels.value = []
+    if (!options.preserveRows) channels.value = []
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
@@ -57,7 +59,7 @@ const handleSearch = () => {
 }
 
 const refresh = () => {
-  fetchChannels(pagination.value.page)
+  refreshList(() => fetchChannels(pagination.value.page, { preserveRows: true }))
 }
 
 const changePage = (page: number) => {
@@ -65,19 +67,19 @@ const changePage = (page: number) => {
   fetchChannels(page)
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.value.total_page)
-  if (target === pagination.value.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.value.page_size) return
+  pagination.value.page_size = size
+  fetchChannels(1)
 }
 
 const providerTypeLabel = (value?: string) => {
   const map: Record<string, string> = {
     official: t('admin.paymentChannels.providerTypes.official'),
     epay: t('admin.paymentChannels.providerTypes.epay'),
+    bepusdt: t('admin.paymentChannels.providerTypes.bepusdt'),
     epusdt: t('admin.paymentChannels.providerTypes.epusdt'),
     okpay: t('admin.paymentChannels.providerTypes.okpay'),
     tokenpay: t('admin.paymentChannels.providerTypes.tokenpay'),
@@ -192,6 +194,7 @@ watch(
 </script>
 
 <template>
+  <ComplianceGuardWrapper>
   <div class="space-y-6">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h1 class="text-2xl font-semibold">{{ t('admin.paymentChannels.title') }}</h1>
@@ -211,6 +214,7 @@ watch(
               <SelectItem value="__all__">{{ t('admin.paymentChannels.filterProviderAll') }}</SelectItem>
               <SelectItem value="official">{{ t('admin.paymentChannels.providerTypes.official') }}</SelectItem>
               <SelectItem value="epay">{{ t('admin.paymentChannels.providerTypes.epay') }}</SelectItem>
+              <SelectItem value="bepusdt">{{ t('admin.paymentChannels.providerTypes.bepusdt') }}</SelectItem>
               <SelectItem value="epusdt">{{ t('admin.paymentChannels.providerTypes.epusdt') }}</SelectItem>
               <SelectItem value="okpay">{{ t('admin.paymentChannels.providerTypes.okpay') }}</SelectItem>
               <SelectItem value="tokenpay">{{ t('admin.paymentChannels.providerTypes.tokenpay') }}</SelectItem>
@@ -237,7 +241,7 @@ watch(
           </Select>
         </div>
         <div class="hidden flex-1 sm:block"></div>
-        <Button size="sm" variant="outline" class="w-full sm:w-auto" @click="refresh">{{ t('admin.common.refresh') }}</Button>
+        <Button size="sm" variant="outline" class="w-full sm:w-auto" :disabled="refreshing" @click="refresh">{{ t('admin.common.refresh') }}</Button>
       </div>
     </div>
 
@@ -264,7 +268,7 @@ watch(
           <TableRow v-else-if="channels.length === 0">
             <TableCell colspan="8" class="px-6 py-8 text-center text-muted-foreground">{{ t('admin.paymentChannels.empty') }}</TableCell>
           </TableRow>
-          <TableRow v-for="channel in channels" :key="channel.id" class="hover:bg-muted/30 group">
+          <TableRow v-for="channel in channels" :key="channel.id" class="hover:bg-muted/30">
             <TableCell class="px-6 py-4">
               <IdCell :value="channel.id" />
             </TableCell>
@@ -287,7 +291,7 @@ watch(
             </TableCell>
             <TableCell class="min-w-[120px] px-6 py-4 text-xs text-muted-foreground">{{ channel.sort_order }}</TableCell>
             <TableCell class="min-w-[160px] px-6 py-4 text-right">
-              <div class="flex flex-wrap items-center justify-end gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+              <div class="flex flex-wrap items-center justify-end gap-2">
                 <Button size="sm" variant="outline" @click="openEditModal(channel)">
                   {{ t('admin.common.edit') }}
                 </Button>
@@ -300,45 +304,15 @@ watch(
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-wrap items-center justify-between gap-3 border-t border-border px-6 py-4"
-      >
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">
-            {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-          </span>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="flex items-center gap-2">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex items-center gap-2">
-            <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-8"
-              :disabled="pagination.page >= pagination.total_page"
-              @click="changePage(pagination.page + 1)"
-            >
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <PaymentChannelModal
@@ -347,4 +321,5 @@ watch(
       @success="handleModalSuccess"
     />
   </div>
+  </ComplianceGuardWrapper>
 </template>

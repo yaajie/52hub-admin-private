@@ -27,6 +27,7 @@ const props = defineProps<{
   modelValue: boolean
   order: AdminOrder | null
   siteCurrency: string
+  maxRefundDays: number
 }>()
 
 const emit = defineEmits<{
@@ -45,9 +46,17 @@ const procurementOrder = ref<AdminProcurementOrder | null | undefined>(null)
 const refundSubmitting = ref(false)
 const refundError = ref('')
 const refundSuccess = ref('')
+const refundTab = ref<'manual' | 'wallet'>('wallet')
 const refundForm = reactive({
   amount: '',
   remark: '',
+})
+const manualRefundSubmitting = ref(false)
+const manualRefundError = ref('')
+const manualRefundSuccess = ref('')
+const manualRefundForm = reactive({
+  amount: '',
+  reason: '',
 })
 
 const adminPath = import.meta.env.VITE_ADMIN_PATH || ''
@@ -94,20 +103,116 @@ const channelTypeLabel = (value?: string) => {
   return map[value] || value
 }
 
-const itemProfit = (item: AdminOrderItem) => {
-  const revenue = parseMoneyValue(item.total_price)
-    - parseMoneyValue(item.coupon_discount_amount)
+const itemRevenueAmount = (item: AdminOrderItem) => {
+  return parseMoneyValue(item.total_price) - parseMoneyValue(item.coupon_discount_amount)
+}
+
+const itemBaseProfit = (item: AdminOrderItem) => {
   const cost = parseMoneyValue(item.cost_price) * (item.quantity || 1)
-  return Number((revenue - cost).toFixed(2))
+  return itemRevenueAmount(item) - cost
+}
+
+const refundedAmount = (order: AdminOrder | null) => {
+  if (!order) return 0
+  return Math.max(parseMoneyValue(order.refunded_amount), 0)
+}
+
+const toCents = (amount: number) => Math.round(amount * 100)
+const fromCents = (cents: number) => Number((cents / 100).toFixed(2))
+
+const refundAllocationCache = new WeakMap<AdminOrder, Map<AdminOrderItem, number>>()
+
+const buildRefundAllocation = (order: AdminOrder | null) => {
+  const allocation = new Map<AdminOrderItem, number>()
+  if (!order || !Array.isArray(order.items) || order.items.length === 0) return allocation
+
+  const refundedCents = toCents(refundedAmount(order))
+  if (refundedCents <= 0) return allocation
+
+  const items = order.items
+  const weights = items.map((item) => Math.max(itemRevenueAmount(item), 0))
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0)
+
+  if (totalWeight <= 0) {
+    const base = Math.floor(refundedCents / items.length)
+    let remainder = refundedCents - base * items.length
+    items.forEach((item) => {
+      const extra = remainder > 0 ? 1 : 0
+      if (remainder > 0) remainder -= 1
+      allocation.set(item, fromCents(base + extra))
+    })
+    return allocation
+  }
+
+  let assigned = 0
+  items.forEach((item, index) => {
+    let shareCents = 0
+    if (index === items.length - 1) {
+      shareCents = Math.max(refundedCents - assigned, 0)
+    } else {
+      shareCents = Math.floor((refundedCents * (weights[index] ?? 0)) / totalWeight)
+      assigned += shareCents
+    }
+    allocation.set(item, fromCents(shareCents))
+  })
+
+  return allocation
+}
+
+const itemRefundAmount = (order: AdminOrder | null, item: AdminOrderItem) => {
+  if (!order) return 0
+  const cached = refundAllocationCache.get(order)
+  if (cached) {
+    return cached.get(item) || 0
+  }
+  const allocation = buildRefundAllocation(order)
+  refundAllocationCache.set(order, allocation)
+  return allocation.get(item) || 0
+}
+
+const itemProfit = (order: AdminOrder | null, item: AdminOrderItem) => {
+  const profit = itemBaseProfit(item) - itemRefundAmount(order, item)
+  return Number(profit.toFixed(2))
 }
 
 const orderProfit = (order: AdminOrder | null) => {
   if (!order?.items?.length) return 0
-  return Number(order.items.reduce((sum, item) => sum + itemProfit(item), 0).toFixed(2))
+  return Number(order.items.reduce((sum, item) => sum + itemProfit(order, item), 0).toFixed(2))
 }
 
 const hasWalletPayment = (order: AdminOrder) => hasPositiveAmount(order?.wallet_paid_amount)
 const hasOnlinePayment = (order: AdminOrder) => hasPositiveAmount(order?.online_paid_amount)
+const formatDiscountMoney = (amount?: string | number, currency?: string) => {
+  return hasPositiveAmount(amount) ? `-${formatMoney(amount, currency)}` : formatMoney(amount, currency)
+}
+
+const positiveAmountValue = (amount?: string | number) => {
+  const value = Number(amount)
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+const itemDiscountTotal = (item: AdminOrderItem) => {
+  return Number((
+    positiveAmountValue(item.promotion_discount_amount)
+    + positiveAmountValue(item.member_discount_amount)
+    + positiveAmountValue(item.coupon_discount_amount)
+  ).toFixed(2))
+}
+
+const hasItemDiscount = (item: AdminOrderItem) => itemDiscountTotal(item) > 0
+
+const formatItemDiscountTotal = (item: AdminOrderItem, currency?: string) => {
+  return formatMoney(itemDiscountTotal(item).toFixed(2), currency)
+}
+
+const itemPaidAmount = (item: AdminOrderItem) => {
+  const paid = positiveAmountValue(item.total_price) - positiveAmountValue(item.coupon_discount_amount)
+  return Number(Math.max(0, paid).toFixed(2))
+}
+
+const formatItemPaidAmount = (item: AdminOrderItem, currency?: string) => {
+  return formatMoney(itemPaidAmount(item).toFixed(2), currency)
+}
 
 const orderPaymentMethodLabel = (order: AdminOrder) => {
   if (hasWalletPayment(order) && hasOnlinePayment(order)) {
@@ -308,6 +413,28 @@ const isPaidOrder = (order: AdminOrder | null) => {
   return Boolean(order.paid_at)
 }
 
+const normalizedMaxRefundDays = () => {
+  const parsed = Number(props.maxRefundDays)
+  if (!Number.isFinite(parsed)) return 30
+  const normalized = Math.trunc(parsed)
+  if (normalized < 0) return 30
+  if (normalized > 3650) return 3650
+  return normalized
+}
+
+const isOrderRefundWindowExpired = (order: AdminOrder | null) => {
+  if (!order || !isPaidOrder(order)) return false
+  if (normalizedMaxRefundDays() === 0) return false
+  const baseAtRaw = order.paid_at || order.created_at
+  if (!baseAtRaw) return false
+  const baseAtMs = Date.parse(baseAtRaw)
+  if (Number.isNaN(baseAtMs)) return false
+  const nowMs = Date.now()
+  if (!Number.isFinite(nowMs) || nowMs <= baseAtMs) return false
+  const diffDays = (nowMs - baseAtMs) / (1000 * 60 * 60 * 24)
+  return diffDays > normalizedMaxRefundDays()
+}
+
 const refundableAmountValue = (order: AdminOrder | null) => {
   if (!order) return 0
   if (!isPaidOrder(order)) return 0
@@ -324,7 +451,31 @@ const canRefundToWallet = (order: AdminOrder | null) => {
   if (!order) return false
   if (!order.user_id) return false
   if (!isPaidOrder(order)) return false
+  if (isOrderRefundWindowExpired(order)) return false
   return refundableAmountValue(order) > 0
+}
+
+const canManualRefund = (order: AdminOrder | null) => {
+  if (!order) return false
+  if (!isPaidOrder(order)) return false
+  if (isOrderRefundWindowExpired(order)) return false
+  return refundableAmountValue(order) > 0
+}
+
+const shouldShowRefundCard = (order: AdminOrder | null) => {
+  if (!order) return false
+  if (!isPaidOrder(order)) return false
+  if (order.status === 'canceled') return false
+  if (isOrderRefundWindowExpired(order)) return false
+  return true
+}
+
+const canSelectWalletRefundTab = (order: AdminOrder | null) => Boolean(order?.user_id)
+
+const defaultRefundTab = (order: AdminOrder | null): 'manual' | 'wallet' => (canSelectWalletRefundTab(order) ? 'wallet' : 'manual')
+
+const ensureRefundTabAvailable = (order: AdminOrder | null) => {
+  refundTab.value = defaultRefundTab(order)
 }
 
 const resetRefundForm = () => {
@@ -332,6 +483,13 @@ const resetRefundForm = () => {
   refundForm.remark = ''
   refundError.value = ''
   refundSuccess.value = ''
+}
+
+const resetManualRefundForm = () => {
+  manualRefundForm.amount = ''
+  manualRefundForm.reason = ''
+  manualRefundError.value = ''
+  manualRefundSuccess.value = ''
 }
 
 const formatFeeRate = (channel: AdminPayment | { fee_rate: number | string; fixed_fee?: number | string }) => {
@@ -368,6 +526,7 @@ const fetchOrderDetail = async (orderId: number) => {
   try {
     const response = await adminAPI.getOrder(orderId)
     selectedOrder.value = response.data.data
+    ensureRefundTabAvailable(selectedOrder.value)
     try {
       const procRes = await adminAPI.getProcurementOrders({ order_no: selectedOrder.value?.order_no, page_size: 1 })
       const procList = procRes.data.data
@@ -421,11 +580,50 @@ const submitRefundToWallet = async () => {
   }
 }
 
+const submitManualRefund = async () => {
+  if (!selectedOrder.value) return
+  manualRefundError.value = ''
+  manualRefundSuccess.value = ''
+  if (!canManualRefund(selectedOrder.value)) {
+    manualRefundError.value = t('admin.orders.refundNoRemaining')
+    return
+  }
+  const amount = manualRefundForm.amount.trim()
+  const value = Number(amount)
+  if (!amount || Number.isNaN(value) || value <= 0) {
+    manualRefundError.value = t('admin.orders.refundInvalidAmount')
+    return
+  }
+  if (value > refundableAmountValue(selectedOrder.value)) {
+    manualRefundError.value = t('admin.orders.refundExceeded')
+    return
+  }
+
+  manualRefundSubmitting.value = true
+  try {
+    await adminAPI.manualRefundOrder(Number(selectedOrder.value.id), {
+      amount,
+      remark: manualRefundForm.reason.trim() || undefined,
+    })
+    manualRefundSuccess.value = t('admin.orders.manualRefundSuccess')
+    manualRefundForm.amount = ''
+    manualRefundForm.reason = ''
+    await fetchOrderDetail(Number(selectedOrder.value.id))
+    emit('refresh')
+  } catch (err: any) {
+    manualRefundError.value = err?.message || t('admin.orders.refundFailed')
+  } finally {
+    manualRefundSubmitting.value = false
+  }
+}
+
 const handleClose = () => {
   emit('update:modelValue', false)
   selectedOrder.value = null
   detailError.value = ''
+  refundTab.value = 'wallet'
   resetRefundForm()
+  resetManualRefundForm()
 }
 
 const handleOpenFulfillment = (order: AdminOrder, parentId?: number) => {
@@ -438,7 +636,9 @@ watch(
   () => props.order,
   (newOrder) => {
     if (newOrder && props.modelValue) {
+      refundTab.value = defaultRefundTab(newOrder)
       resetRefundForm()
+      resetManualRefundForm()
       fetchOrderDetail(newOrder.id)
     }
   }
@@ -448,7 +648,9 @@ watch(
   () => props.modelValue,
   (open) => {
     if (open && props.order) {
+      refundTab.value = defaultRefundTab(props.order)
       resetRefundForm()
+      resetManualRefundForm()
       fetchOrderDetail(props.order.id)
     }
     if (!open) {
@@ -531,7 +733,12 @@ watch(
               <Card class="min-w-0 rounded-lg border-border bg-background shadow-none">
                 <CardContent class="p-3">
                   <div class="text-xs text-muted-foreground">{{ t('orderDetail.amountDiscount') }}</div>
-                  <div class="text-foreground font-mono mt-1">{{ formatMoney(selectedOrder.discount_amount, selectedOrder.currency) }}</div>
+                  <div
+                    class="font-mono mt-1"
+                    :class="hasPositiveAmount(selectedOrder.discount_amount) ? 'text-red-600' : 'text-foreground'"
+                  >
+                    {{ formatDiscountMoney(selectedOrder.discount_amount, selectedOrder.currency) }}
+                  </div>
                 </CardContent>
               </Card>
               <Card class="min-w-0 rounded-lg border-border bg-background shadow-none">
@@ -573,19 +780,29 @@ watch(
               <Card class="min-w-0 rounded-lg border-border bg-background shadow-none">
                 <CardContent class="p-3">
                   <div class="text-xs text-muted-foreground">{{ t('admin.orders.detailCouponDiscount') }}</div>
-                  <div class="text-foreground font-mono mt-1">{{ formatMoney(selectedOrder.discount_amount, selectedOrder.currency) }}</div>
+                  <div
+                    class="font-mono mt-1"
+                    :class="hasPositiveAmount(selectedOrder.discount_amount) ? 'text-red-600' : 'text-foreground'"
+                  >
+                    {{ formatDiscountMoney(selectedOrder.discount_amount, selectedOrder.currency) }}
+                  </div>
                 </CardContent>
               </Card>
               <Card class="min-w-0 rounded-lg border-border bg-background shadow-none">
                 <CardContent class="p-3">
                   <div class="text-xs text-muted-foreground">{{ t('admin.orders.detailPromotionDiscount') }}</div>
-                  <div class="text-foreground font-mono mt-1">{{ formatMoney(selectedOrder.promotion_discount_amount, selectedOrder.currency) }}</div>
+                  <div
+                    class="font-mono mt-1"
+                    :class="hasPositiveAmount(selectedOrder.promotion_discount_amount) ? 'text-red-600' : 'text-foreground'"
+                  >
+                    {{ formatDiscountMoney(selectedOrder.promotion_discount_amount, selectedOrder.currency) }}
+                  </div>
                 </CardContent>
               </Card>
               <Card v-if="hasPositiveAmount(selectedOrder.member_discount_amount)" class="min-w-0 rounded-lg border-amber-200 bg-amber-50/50 shadow-none">
                 <CardContent class="p-3">
                   <div class="text-xs text-amber-700">{{ t('admin.orders.detailMemberDiscount') }}</div>
-                  <div class="text-amber-700 font-mono mt-1">{{ formatMoney(selectedOrder.member_discount_amount, selectedOrder.currency) }}</div>
+                  <div class="text-amber-700 font-mono mt-1">{{ formatDiscountMoney(selectedOrder.member_discount_amount, selectedOrder.currency) }}</div>
                 </CardContent>
               </Card>
             </div>
@@ -645,26 +862,38 @@ watch(
                     </div>
                   </div>
                   <div class="space-y-1 text-left md:text-right">
-                    <div>{{ t('orderDetail.unitPriceLabel') }}：{{ formatMoney(item.unit_price, selectedOrder.currency) }}</div>
+                    <div>{{ t('orderDetail.unitPriceLabel') }}：{{ formatMoney(item.original_unit_price, selectedOrder.currency) }}</div>
                     <div>{{ t('admin.orders.costPrice') }}：{{ formatMoney(item.cost_price, selectedOrder.currency) }}</div>
-                    <div>{{ t('orderDetail.totalPriceLabel') }}：{{ formatMoney(item.total_price, selectedOrder.currency) }}</div>
+                    <div>{{ t('orderDetail.totalPriceLabel') }}：{{ formatMoney(item.original_total_price, selectedOrder.currency) }}</div>
                     <div v-if="hasPositiveAmount(item.coupon_discount_amount)">
-                      {{ t('orderDetail.couponDiscountLabel') }}：{{ formatMoney(item.coupon_discount_amount, selectedOrder.currency) }}
+                      {{ t('orderDetail.couponDiscountLabel') }}：{{ formatDiscountMoney(item.coupon_discount_amount, selectedOrder.currency) }}
                     </div>
                     <div v-if="hasPositiveAmount(item.promotion_discount_amount)">
-                      {{ t('orderDetail.promotionDiscountLabel') }}：{{ formatMoney(item.promotion_discount_amount, selectedOrder.currency) }}
+                      {{ t('orderDetail.promotionDiscountLabel') }}：{{ formatDiscountMoney(item.promotion_discount_amount, selectedOrder.currency) }}
                     </div>
-                    <div v-if="hasPositiveAmount(item.member_discount_amount)" class="text-amber-700">
-                      {{ t('orderDetail.memberDiscountLabel') }}：{{ formatMoney(item.member_discount_amount, selectedOrder.currency) }}
+                    <div v-if="hasPositiveAmount(item.member_discount_amount)">
+                      {{ t('orderDetail.memberDiscountLabel') }}：{{ formatDiscountMoney(item.member_discount_amount, selectedOrder.currency) }}
+                    </div>
+                    <div v-if="hasItemDiscount(item)" class="font-medium text-red-600">
+                      {{ t('orderDetail.itemDiscountTotalLabel') }}：{{ formatItemDiscountTotal(item, selectedOrder.currency) }}
+                    </div>
+                    <div class="font-medium text-foreground">
+                      {{ t('orderDetail.itemPaidAmountLabel') }}：{{ formatItemPaidAmount(item, selectedOrder.currency) }}
+                    </div>
+                    <div v-if="hasPositiveAmount(itemRefundAmount(selectedOrder, item))" class="text-blue-700">
+                      {{ t('admin.orders.itemRefund') }}：{{ formatMoney(itemRefundAmount(selectedOrder, item).toFixed(2), selectedOrder.currency) }}
                     </div>
                     <div class="font-medium text-emerald-700">
-                      {{ t('admin.orders.itemProfit') }}：{{ formatMoney(itemProfit(item).toFixed(2), selectedOrder.currency) }}
+                      {{ t('admin.orders.itemProfit') }}：{{ formatMoney(itemProfit(selectedOrder, item).toFixed(2), selectedOrder.currency) }}
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-            <div v-if="selectedOrder.items && selectedOrder.items.length" class="mt-3 flex justify-end">
+            <div v-if="selectedOrder.items && selectedOrder.items.length" class="mt-3 flex flex-wrap justify-end gap-2">
+              <div v-if="hasPositiveAmount(selectedOrder.refunded_amount)" class="rounded-lg border border-blue-200 bg-blue-50/60 px-4 py-2 text-sm font-semibold text-blue-700">
+                {{ t('admin.orders.itemRefund') }}：{{ formatMoney(selectedOrder.refunded_amount, selectedOrder.currency) }}
+              </div>
               <div class="rounded-lg border border-emerald-200 bg-emerald-50/50 px-4 py-2 text-sm font-semibold text-emerald-700">
                 {{ t('admin.orders.orderProfit') }}：{{ formatMoney(orderProfit(selectedOrder).toFixed(2), selectedOrder.currency) }}
               </div>
@@ -720,20 +949,29 @@ watch(
                         </div>
                       </div>
                       <div class="space-y-1 text-left md:text-right">
-                        <div>{{ t('orderDetail.unitPriceLabel') }}：{{ formatMoney(item.unit_price, selectedOrder.currency) }}</div>
+                        <div>{{ t('orderDetail.unitPriceLabel') }}：{{ formatMoney(item.original_unit_price, selectedOrder.currency) }}</div>
                         <div>{{ t('admin.orders.costPrice') }}：{{ formatMoney(item.cost_price, selectedOrder.currency) }}</div>
-                        <div>{{ t('orderDetail.totalPriceLabel') }}：{{ formatMoney(item.total_price, selectedOrder.currency) }}</div>
+                        <div>{{ t('orderDetail.totalPriceLabel') }}：{{ formatMoney(item.original_total_price, selectedOrder.currency) }}</div>
                         <div v-if="hasPositiveAmount(item.coupon_discount_amount)">
-                          {{ t('orderDetail.couponDiscountLabel') }}：{{ formatMoney(item.coupon_discount_amount, selectedOrder.currency) }}
+                          {{ t('orderDetail.couponDiscountLabel') }}：{{ formatDiscountMoney(item.coupon_discount_amount, selectedOrder.currency) }}
                         </div>
                         <div v-if="hasPositiveAmount(item.promotion_discount_amount)">
-                          {{ t('orderDetail.promotionDiscountLabel') }}：{{ formatMoney(item.promotion_discount_amount, selectedOrder.currency) }}
+                          {{ t('orderDetail.promotionDiscountLabel') }}：{{ formatDiscountMoney(item.promotion_discount_amount, selectedOrder.currency) }}
                         </div>
-                        <div v-if="hasPositiveAmount(item.member_discount_amount)" class="text-amber-700">
-                          {{ t('orderDetail.memberDiscountLabel') }}：{{ formatMoney(item.member_discount_amount, selectedOrder.currency) }}
+                        <div v-if="hasPositiveAmount(item.member_discount_amount)">
+                          {{ t('orderDetail.memberDiscountLabel') }}：{{ formatDiscountMoney(item.member_discount_amount, selectedOrder.currency) }}
+                        </div>
+                        <div v-if="hasItemDiscount(item)" class="font-medium text-red-600">
+                          {{ t('orderDetail.itemDiscountTotalLabel') }}：{{ formatItemDiscountTotal(item, selectedOrder.currency) }}
+                        </div>
+                        <div class="font-medium text-foreground">
+                          {{ t('orderDetail.itemPaidAmountLabel') }}：{{ formatItemPaidAmount(item, selectedOrder.currency) }}
+                        </div>
+                        <div v-if="hasPositiveAmount(itemRefundAmount(child, item))" class="text-blue-700">
+                          {{ t('admin.orders.itemRefund') }}：{{ formatMoney(itemRefundAmount(child, item).toFixed(2), selectedOrder.currency) }}
                         </div>
                         <div class="font-medium text-emerald-700">
-                          {{ t('admin.orders.itemProfit') }}：{{ formatMoney(itemProfit(item).toFixed(2), selectedOrder.currency) }}
+                          {{ t('admin.orders.itemProfit') }}：{{ formatMoney(itemProfit(child, item).toFixed(2), selectedOrder.currency) }}
                         </div>
                       </div>
                     </div>
@@ -807,8 +1045,9 @@ watch(
                   class="ml-1 inline-flex rounded-full border px-2 py-0.5 text-xs"
                   :class="{
                     'text-yellow-700 border-yellow-200 bg-yellow-50': procurementOrder.status === 'pending',
-                    'text-blue-700 border-blue-200 bg-blue-50': ['submitted', 'accepted'].includes(procurementOrder.status),
+                    'text-blue-700 border-blue-200 bg-blue-50': ['submitted', 'accepted', 'refunded'].includes(procurementOrder.status),
                     'text-emerald-700 border-emerald-200 bg-emerald-50': ['fulfilled', 'completed'].includes(procurementOrder.status),
+                    'text-orange-700 border-orange-200 bg-orange-50': procurementOrder.status === 'partially_refunded',
                     'text-red-700 border-red-200 bg-red-50': ['failed', 'rejected'].includes(procurementOrder.status),
                     'text-muted-foreground border-border bg-muted/30': procurementOrder.status === 'canceled',
                   }"
@@ -886,12 +1125,36 @@ watch(
             <div v-else class="text-xs text-muted-foreground">{{ t('admin.payments.empty') }}</div>
           </div>
 
-          <div v-if="selectedOrder.user_id" class="rounded-xl border border-border bg-muted/20 p-4">
-            <h3 class="text-sm font-semibold text-foreground mb-3">{{ t('admin.orders.refundToWalletTitle') }}</h3>
+          <div v-if="shouldShowRefundCard(selectedOrder)" class="rounded-xl border border-border bg-muted/20 p-4">
+            <h3 class="text-sm font-semibold text-foreground mb-3">{{ t('admin.orders.refundCardTitle') }}</h3>
             <div class="mb-3 text-xs text-muted-foreground">
               {{ t('admin.orders.refundableAmount') }}：{{ refundableAmountDisplay(selectedOrder) }}
             </div>
-            <form class="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]" @submit.prevent="submitRefundToWallet">
+            <div class="mb-4 inline-flex rounded-lg border border-border bg-background p-1">
+              <button
+                v-if="canSelectWalletRefundTab(selectedOrder)"
+                type="button"
+                class="rounded-md px-3 py-1.5 text-xs transition-colors"
+                :class="refundTab === 'wallet' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+                @click="refundTab = 'wallet'"
+              >
+                {{ t('admin.orders.refundTabWallet') }}
+              </button>
+              <button
+                type="button"
+                class="rounded-md px-3 py-1.5 text-xs transition-colors"
+                :class="refundTab === 'manual' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+                @click="refundTab = 'manual'"
+              >
+                {{ t('admin.orders.refundTabManual') }}
+              </button>
+            </div>
+
+            <form
+              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder)"
+              class="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]"
+              @submit.prevent="submitRefundToWallet"
+            >
               <Input
                 class="min-w-0"
                 v-model="refundForm.amount"
@@ -912,14 +1175,66 @@ watch(
                 {{ refundSubmitting ? t('admin.orders.refunding') : t('admin.orders.refundSubmit') }}
               </Button>
             </form>
-            <div v-if="!canRefundToWallet(selectedOrder)" class="mt-3 text-xs text-muted-foreground">
+            <form
+              v-else
+              class="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]"
+              @submit.prevent="submitManualRefund"
+            >
+              <Input
+                class="min-w-0"
+                v-model="manualRefundForm.amount"
+                :placeholder="t('admin.orders.refundAmountPlaceholder')"
+                :disabled="manualRefundSubmitting || !canManualRefund(selectedOrder)"
+              />
+              <Input
+                class="min-w-0"
+                v-model="manualRefundForm.reason"
+                :placeholder="t('admin.orders.manualRefundReasonPlaceholder')"
+                :disabled="manualRefundSubmitting || !canManualRefund(selectedOrder)"
+              />
+              <Button
+                class="w-full md:w-auto"
+                type="submit"
+                :disabled="manualRefundSubmitting || !canManualRefund(selectedOrder)"
+              >
+                {{ manualRefundSubmitting ? t('admin.orders.refunding') : t('admin.orders.manualRefundSubmit') }}
+              </Button>
+            </form>
+            <div
+              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder) && !canRefundToWallet(selectedOrder)"
+              class="mt-3 text-xs text-muted-foreground"
+            >
               {{ t('admin.orders.refundNoRemaining') }}
             </div>
-            <div v-if="refundError" class="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            <div
+              v-if="(refundTab !== 'wallet' || !canSelectWalletRefundTab(selectedOrder)) && !canManualRefund(selectedOrder)"
+              class="mt-3 text-xs text-muted-foreground"
+            >
+              {{ t('admin.orders.refundNoRemaining') }}
+            </div>
+            <div
+              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder) && refundError"
+              class="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+            >
               {{ refundError }}
             </div>
-            <div v-if="refundSuccess" class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+            <div
+              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder) && refundSuccess"
+              class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"
+            >
               {{ refundSuccess }}
+            </div>
+            <div
+              v-if="(refundTab !== 'wallet' || !canSelectWalletRefundTab(selectedOrder)) && manualRefundError"
+              class="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+            >
+              {{ manualRefundError }}
+            </div>
+            <div
+              v-if="(refundTab !== 'wallet' || !canSelectWalletRefundTab(selectedOrder)) && manualRefundSuccess"
+              class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"
+            >
+              {{ manualRefundSuccess }}
             </div>
           </div>
         </div>

@@ -1,23 +1,30 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { adminAPI } from '@/api/admin'
-import type { AdminCoupon, AdminProduct } from '@/api/types'
+import type { AdminCoupon, AdminMemberLevel, AdminProduct } from '@/api/types'
 import IdCell from '@/components/IdCell.vue'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogHeader, DialogScrollContent, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { MultiSelect } from '@/components/ui/multi-select'
 import { formatDate, getLocalizedText } from '@/utils/format'
 import { notifyError } from '@/utils/notify'
 import { confirmAction } from '@/utils/confirm'
 import { useFormValidation, rules } from '@/composables/useFormValidation'
 
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const coupons = ref<AdminCoupon[]>([])
 const pagination = ref({
   page: 1,
@@ -25,7 +32,6 @@ const pagination = ref({
   total: 0,
   total_page: 1,
 })
-const jumpPage = ref('')
 const filters = reactive({
   id: '',
   code: '',
@@ -45,6 +51,7 @@ const scopeFilterKeyword = ref('')
 const productKeyword = ref('')
 const productOptions = ref<AdminProduct[]>([])
 const productOptionsLoading = ref(false)
+const memberLevels = ref<AdminMemberLevel[]>([])
 const selectedScopeIDs = ref<number[]>([])
 const form = reactive({
   code: '',
@@ -54,6 +61,8 @@ const form = reactive({
   max_discount: 0,
   usage_limit: 0,
   per_user_limit: 0,
+  payment_roles: [] as string[],
+  member_levels: [] as number[],
   starts_at: '',
   ends_at: '',
   is_active: true,
@@ -101,6 +110,18 @@ const discountTypeLabel = (type: string) => {
   return map[type] || type
 }
 
+const paymentRoleOptions = computed(() => [
+  { value: 'guest', label: t('admin.coupons.paymentRoles.guest') },
+  { value: 'member', label: t('admin.coupons.paymentRoles.member') },
+])
+
+const memberLevelOptions = computed(() =>
+  memberLevels.value.map((item) => ({
+    value: item.id,
+    label: getLocalizedText(item.name) || `#${item.id}`,
+  }))
+)
+
 const resetForm = () => {
   form.code = ''
   form.type = 'percent'
@@ -109,6 +130,8 @@ const resetForm = () => {
   form.max_discount = 0
   form.usage_limit = 0
   form.per_user_limit = 0
+  form.payment_roles = []
+  form.member_levels = []
   form.starts_at = ''
   form.ends_at = ''
   form.is_active = true
@@ -157,6 +180,34 @@ const normalizeScopeIDs = (raw: unknown) => {
       new Set(
         text
           .split(/[,，\s]+/)
+          .map((item) => Number(item))
+          .filter((item) => Number.isFinite(item) && item > 0)
+          .map((item) => Math.floor(item))
+      )
+    )
+  }
+  return []
+}
+
+const normalizePaymentRoles = (raw: unknown) => {
+  if (Array.isArray(raw)) {
+    const allowed = new Set(['guest', 'member'])
+    return Array.from(
+      new Set(
+        raw
+          .map((item) => String(item || '').trim().toLowerCase())
+          .filter((item) => allowed.has(item))
+      )
+    )
+  }
+  return []
+}
+
+const normalizeMemberLevels = (raw: unknown) => {
+  if (Array.isArray(raw)) {
+    return Array.from(
+      new Set(
+        raw
           .map((item) => Number(item))
           .filter((item) => Number.isFinite(item) && item > 0)
           .map((item) => Math.floor(item))
@@ -227,6 +278,15 @@ const loadProductOptions = async (keywordInput?: string) => {
   }
 }
 
+const loadMemberLevels = async () => {
+  try {
+    const response = await adminAPI.getMemberLevels({ page: 1, page_size: 200 })
+    memberLevels.value = Array.isArray(response.data.data) ? response.data.data : []
+  } catch {
+    memberLevels.value = []
+  }
+}
+
 const handleSearchProducts = async () => {
   await loadProductOptions(productKeyword.value)
 }
@@ -235,15 +295,15 @@ const handleSearchScopeProducts = async () => {
   await loadProductOptions(scopeFilterKeyword.value)
 }
 
-const toggleScopeProduct = (rawProductID: number | string) => {
+const toggleScopeProduct = (rawProductID: number | string, v: boolean | 'indeterminate') => {
   const productID = Number(rawProductID)
   if (!Number.isFinite(productID) || productID <= 0) return
   const normalizedID = Math.floor(productID)
-  if (selectedScopeIDs.value.includes(normalizedID)) {
+  if (v === true) {
+    selectedScopeIDs.value = Array.from(new Set([...selectedScopeIDs.value, normalizedID])).sort((a, b) => a - b)
+  } else {
     selectedScopeIDs.value = selectedScopeIDs.value.filter((id) => id !== normalizedID)
-    return
   }
-  selectedScopeIDs.value = Array.from(new Set([...selectedScopeIDs.value, normalizedID])).sort((a, b) => a - b)
 }
 
 const scopeProductChecked = (rawProductID: number | string) => {
@@ -272,8 +332,8 @@ const resolveProductNameByID = (rawProductID: number | string) => {
   return getLocalizedText(target?.title || {})
 }
 
-const fetchCoupons = async (page = 1) => {
-  loading.value = true
+const fetchCoupons = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   try {
     const normalizedIsActive = normalizeFilterValue(filters.isActive)
     const normalizedScopeRefID = normalizeScopeFilterValue(filters.scopeRefId)
@@ -296,9 +356,9 @@ const fetchCoupons = async (page = 1) => {
       autoOpenId.value = null
     }
   } catch {
-    coupons.value = []
+    if (!options.preserveRows) coupons.value = []
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
@@ -312,7 +372,7 @@ const handleScopeFilterChange = () => {
 }
 
 const refresh = () => {
-  fetchCoupons(pagination.value.page)
+  refreshList(() => fetchCoupons(pagination.value.page, { preserveRows: true }))
 }
 
 const changePage = (page: number) => {
@@ -320,13 +380,12 @@ const changePage = (page: number) => {
   fetchCoupons(page)
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.value.total_page)
-  if (target === pagination.value.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.value.page_size) return
+  pagination.value.page_size = size
+  fetchCoupons(1)
 }
 
 const openCreateModal = () => {
@@ -349,6 +408,8 @@ const openEditModal = (coupon: AdminCoupon) => {
   form.max_discount = coupon.max_discount || 0
   form.usage_limit = coupon.usage_limit || 0
   form.per_user_limit = coupon.per_user_limit || 0
+  form.payment_roles = normalizePaymentRoles(coupon.payment_roles)
+  form.member_levels = normalizeMemberLevels(coupon.member_levels)
   form.starts_at = toLocalInput(coupon.starts_at)
   form.ends_at = toLocalInput(coupon.ends_at)
   form.is_active = Boolean(coupon.is_active)
@@ -382,6 +443,8 @@ const handleSubmit = async () => {
       max_discount: Number(form.max_discount || 0),
       usage_limit: Number(form.usage_limit || 0),
       per_user_limit: Number(form.per_user_limit || 0),
+      payment_roles: normalizePaymentRoles(form.payment_roles),
+      member_levels: normalizeMemberLevels(form.member_levels),
       starts_at: form.starts_at ? toISO(form.starts_at) : '',
       ends_at: form.ends_at ? toISO(form.ends_at) : '',
       is_active: form.is_active,
@@ -426,9 +489,31 @@ const formatScope = (scope?: unknown) => {
     .join(', ')
 }
 
+const formatPaymentRoles = (raw: unknown) => {
+  const roles = normalizePaymentRoles(raw)
+  if (!roles.length) return '-'
+  const labels: Record<string, string> = {
+    guest: t('admin.coupons.paymentRoles.guest'),
+    member: t('admin.coupons.paymentRoles.member'),
+  }
+  return roles.map((role) => labels[role] || role).join(', ')
+}
+
+const formatMemberLevels = (raw: unknown) => {
+  const levelIDs = normalizeMemberLevels(raw)
+  if (!levelIDs.length) return '-'
+  return levelIDs
+    .map((levelID) => {
+      const target = memberLevels.value.find((item) => Number(item.id) === levelID)
+      if (!target) return `#${levelID}`
+      return getLocalizedText(target.name) || `#${levelID}`
+    })
+    .join(', ')
+}
+
 onMounted(async () => {
   applyRouteFilter()
-  await loadProductOptions()
+  await Promise.all([loadProductOptions(), loadMemberLevels()])
   fetchCoupons()
 })
 
@@ -528,7 +613,7 @@ watch(
           </Select>
         </div>
         <div class="hidden flex-1 sm:block"></div>
-        <Button size="sm" class="w-full sm:w-auto" @click="refresh">{{ t('admin.common.refresh') }}</Button>
+        <Button size="sm" class="w-full sm:w-auto" :disabled="refreshing" @click="refresh">{{ t('admin.common.refresh') }}</Button>
       </div>
     </div>
 
@@ -573,6 +658,8 @@ watch(
               <div class="break-words">{{ t('admin.coupons.limit.maxDiscount') }}：{{ coupon.max_discount || '-' }}</div>
               <div class="break-words">{{ t('admin.coupons.limit.usageLimit') }}：{{ coupon.usage_limit || '-' }}</div>
               <div class="break-words">{{ t('admin.coupons.limit.perUserLimit') }}：{{ coupon.per_user_limit || '-' }}</div>
+              <div class="break-words">{{ t('admin.coupons.limit.paymentRoles') }}：{{ formatPaymentRoles(coupon.payment_roles) }}</div>
+              <div class="break-words">{{ t('admin.coupons.limit.memberLevels') }}：{{ formatMemberLevels(coupon.member_levels) }}</div>
             </TableCell>
             <TableCell class="min-w-[90px] px-6 py-4 text-xs text-muted-foreground">
               <div class="break-words">{{ t('admin.coupons.period.startsAt') }}：{{ formatDate(coupon.starts_at) || '-' }}</div>
@@ -596,45 +683,15 @@ watch(
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-col gap-3 border-t border-border px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">
-            {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-          </span>
-        </div>
-        <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-full sm:w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-8 w-full sm:w-auto"
-              :disabled="pagination.page >= pagination.total_page"
-              @click="changePage(pagination.page + 1)"
-            >
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <Dialog v-model:open="showModal" @update:open="(value) => { if (!value) closeModal() }">
@@ -703,19 +760,17 @@ watch(
                   <div v-else-if="productOptions.length === 0" class="px-3 py-3 text-xs text-muted-foreground">
                     {{ t('admin.coupons.modal.scopeEmpty') }}
                   </div>
-                  <label
+                  <Label
                     v-for="product in productOptions"
                     :key="`scope-product-${product.id}`"
                     class="flex cursor-pointer items-center gap-2 border-b border-border/60 px-3 py-2 text-sm last:border-b-0 hover:bg-muted/30"
                   >
-                    <input
-                      type="checkbox"
-                      class="h-4 w-4 accent-primary"
-                      :checked="scopeProductChecked(product.id)"
-                      @change="toggleScopeProduct(product.id)"
+                    <Checkbox
+                      :model-value="scopeProductChecked(product.id)"
+                      @update:model-value="(v) => toggleScopeProduct(product.id, v)"
                     />
                     <span class="truncate">{{ buildProductLabel(product) }}</span>
-                  </label>
+                  </Label>
                 </div>
               </div>
             </div>
@@ -735,6 +790,23 @@ watch(
               <label class="mb-1.5 block text-xs font-medium text-muted-foreground">{{ t('admin.coupons.modal.perUserLimit') }}</label>
               <Input v-model.number="form.per_user_limit" type="number" placeholder="0" />
             </div>
+            <div class="md:col-span-2">
+              <label class="mb-1.5 block text-xs font-medium text-muted-foreground">{{ t('admin.coupons.modal.paymentRoles') }}</label>
+              <MultiSelect
+                v-model="form.payment_roles"
+                :options="paymentRoleOptions"
+                :placeholder="t('admin.coupons.modal.paymentRolesPlaceholder')"
+              />
+            </div>
+            <div class="md:col-span-2">
+              <label class="mb-1.5 block text-xs font-medium text-muted-foreground">{{ t('admin.coupons.modal.memberLevels') }}</label>
+              <MultiSelect
+                v-model="form.member_levels"
+                :options="memberLevelOptions"
+                :placeholder="t('admin.coupons.modal.memberLevelsPlaceholder')"
+                :disabled="memberLevelOptions.length === 0"
+              />
+            </div>
             <div>
               <label class="mb-1.5 block text-xs font-medium text-muted-foreground">{{ t('admin.coupons.modal.startsAt') }}</label>
               <Input v-model="form.starts_at" type="datetime-local" />
@@ -744,7 +816,7 @@ watch(
               <Input v-model="form.ends_at" type="datetime-local" />
             </div>
             <div class="flex flex-col gap-2 md:col-span-2 sm:flex-row sm:items-center">
-              <input v-model="form.is_active" type="checkbox" class="h-4 w-4 accent-primary" />
+              <Switch v-model="form.is_active" />
               <span class="text-xs text-muted-foreground">{{ t('admin.common.enabled') }}</span>
             </div>
           </div>

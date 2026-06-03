@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogScrollContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import type { ListFetchOptions } from '@/composables/useListRefresh'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -29,6 +30,8 @@ const jumpPage = ref('')
 
 const filterStatus = ref('__all__')
 const searchQuery = ref('')
+const adminPath = import.meta.env.VITE_ADMIN_PATH || ''
+const userDetailLink = (userId: number) => `${adminPath}/users/${userId}`
 
 const statusOptions = [
   { value: '__all__', key: 'apiCredentials.filters.allStatus' },
@@ -46,8 +49,8 @@ const showReject = ref(false)
 const rejectId = ref<number>(0)
 const rejectReason = ref('')
 
-const fetchCredentials = async (page = 1) => {
-  loading.value = true
+const fetchCredentials = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   try {
     const params: Record<string, unknown> = { page, page_size: pagination.page_size }
     if (filterStatus.value && filterStatus.value !== '__all__') params.status = filterStatus.value
@@ -64,12 +67,12 @@ const fetchCredentials = async (page = 1) => {
   } catch (e: any) {
     notifyError(e?.response?.data?.message || e.message)
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
 const handleSearch = () => {
-  fetchCredentials(1)
+  fetchCredentials(1, { preserveRows: true })
 }
 const debouncedSearch = useDebounceFn(handleSearch, 300)
 
@@ -170,7 +173,7 @@ onMounted(() => fetchCredentials())
 
     <!-- Filters -->
     <div class="flex flex-wrap gap-3 items-center">
-      <Select v-model="filterStatus" @update:model-value="fetchCredentials(1)">
+      <Select v-model="filterStatus" @update:model-value="handleSearch">
         <SelectTrigger class="w-full sm:w-[160px]">
           <SelectValue :placeholder="t('apiCredentials.filters.statusPlaceholder')" />
         </SelectTrigger>
@@ -222,7 +225,17 @@ onMounted(() => fetchCredentials())
               <div class="text-sm">
                 <div class="break-words font-medium">{{ cred.user?.display_name || '-' }}</div>
                 <div class="break-all text-xs text-muted-foreground">{{ cred.user?.email || '-' }}</div>
-                <div class="text-xs text-muted-foreground">ID: {{ cred.user_id }}</div>
+                <div class="text-xs text-muted-foreground">
+                  ID:
+                  <a
+                    :href="userDetailLink(cred.user_id)"
+                    target="_blank"
+                    rel="noopener"
+                    class="font-mono text-primary underline-offset-4 hover:underline"
+                  >
+                    {{ cred.user_id }}
+                  </a>
+                </div>
               </div>
             </TableCell>
             <TableCell class="min-w-[100px] font-mono text-xs"><div class="break-all">{{ cred.api_key || '-' }}</div></TableCell>

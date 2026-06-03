@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { adminAPI } from '@/api/admin'
-import type { AdminPost } from '@/api/types'
+import type { AdminPost, AdminProduct, LocalizedText } from '@/api/types'
 import MediaPicker from '@/components/admin/MediaPicker.vue'
 import RichEditor from '@/components/RichEditor.vue'
 import IdCell from '@/components/IdCell.vue'
@@ -11,14 +11,24 @@ import { getImageUrl } from '@/utils/image'
 import { formatDate, getLocalizedText } from '@/utils/format'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogHeader, DialogScrollContent, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { notifyError } from '@/utils/notify'
 import { confirmAction } from '@/utils/confirm'
 import { useFormValidation, rules } from '@/composables/useFormValidation'
+
+interface RelatedProductRef {
+  id: number
+  slug: string
+  title: LocalizedText
+  image?: string
+}
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -27,6 +37,11 @@ const isEditing = ref(false)
 const currentTab = ref('blog')
 const currentLang = ref('zh-CN')
 const submitting = ref(false)
+
+watch(currentTab, () => {
+  pagination.page = 1
+  fetchPosts()
+})
 const route = useRoute()
 
 const languages = computed(() => [
@@ -42,8 +57,6 @@ const pagination = reactive({
   total: 0,
   total_page: 0,
 })
-const jumpPage = ref('')
-
 const form = reactive({
   id: 0,
   title: { 'zh-CN': '', 'zh-TW': '', 'en-US': '' } as Record<string, string>,
@@ -53,7 +66,72 @@ const form = reactive({
   type: 'blog',
   thumbnail: '',
   is_published: true,
+  product_ids: [] as number[],
 })
+
+const relatedProducts = ref<RelatedProductRef[]>([])
+const productSearch = ref('')
+const productSearchResults = ref<RelatedProductRef[]>([])
+const productSearchLoading = ref(false)
+let productSearchTimer: ReturnType<typeof setTimeout> | null = null
+
+const resetRelatedProductsState = () => {
+  relatedProducts.value = []
+  productSearch.value = ''
+  productSearchResults.value = []
+  productSearchLoading.value = false
+}
+
+const fetchPostRelatedProducts = async (postId: number) => {
+  try {
+    const res = await adminAPI.getPostRelatedProducts(postId)
+    relatedProducts.value = (res.data.data || []) as RelatedProductRef[]
+    form.product_ids = relatedProducts.value.map((p) => p.id)
+  } catch {
+    relatedProducts.value = []
+    form.product_ids = []
+  }
+}
+
+const runProductSearch = async () => {
+  const keyword = productSearch.value.trim()
+  if (!keyword) {
+    productSearchResults.value = []
+    productSearchLoading.value = false
+    return
+  }
+  productSearchLoading.value = true
+  try {
+    const res = await adminAPI.getProducts({ search: keyword, page: 1, page_size: 20 })
+    const list = (res.data.data || []) as AdminProduct[]
+    productSearchResults.value = list.map((p) => ({
+      id: p.id,
+      slug: p.slug,
+      title: p.title,
+      image: p.images?.[0],
+    }))
+  } catch {
+    productSearchResults.value = []
+  } finally {
+    productSearchLoading.value = false
+  }
+}
+
+watch(productSearch, () => {
+  if (productSearchTimer) clearTimeout(productSearchTimer)
+  productSearchTimer = setTimeout(runProductSearch, 300)
+})
+
+const addRelatedProduct = (product: RelatedProductRef) => {
+  if (form.product_ids.includes(product.id)) return
+  relatedProducts.value.push(product)
+  form.product_ids.push(product.id)
+}
+
+const removeRelatedProduct = (id: number) => {
+  relatedProducts.value = relatedProducts.value.filter((p) => p.id !== id)
+  form.product_ids = form.product_ids.filter((pid) => pid !== id)
+}
 
 const { errors, validate, clearErrors } = useFormValidation({
   slug: [rules.required('This field is required')],
@@ -89,19 +167,20 @@ const changePage = (page: number) => {
   fetchPosts()
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.total_page || 1)
-  if (target === pagination.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.page_size) return
+  pagination.page_size = size
+  pagination.page = 1
+  fetchPosts()
 }
 
 const openCreateModal = () => {
   isEditing.value = false
   currentLang.value = 'zh-CN'
   clearErrors()
+  resetRelatedProductsState()
   Object.assign(form, {
     id: 0,
     title: { 'zh-CN': '', 'zh-TW': '', 'en-US': '' },
@@ -111,6 +190,7 @@ const openCreateModal = () => {
     type: currentTab.value,
     thumbnail: '',
     is_published: true,
+    product_ids: [],
   })
   showModal.value = true
 }
@@ -118,6 +198,7 @@ const openCreateModal = () => {
 const openEditModal = (post: AdminPost) => {
   isEditing.value = true
   currentLang.value = 'zh-CN'
+  resetRelatedProductsState()
   Object.assign(form, {
     id: post.id,
     title: post.title || { 'zh-CN': '', 'zh-TW': '', 'en-US': '' },
@@ -127,8 +208,12 @@ const openEditModal = (post: AdminPost) => {
     type: post.type,
     thumbnail: post.thumbnail,
     is_published: post.is_published,
+    product_ids: [],
   })
   showModal.value = true
+  if (post.type === 'blog') {
+    fetchPostRelatedProducts(post.id)
+  }
 }
 
 const closeModal = () => {
@@ -140,7 +225,10 @@ const handleSubmit = async () => {
   if (!validate({ slug: form.slug, type: form.type, title: form.title['zh-CN'] } as Record<string, unknown>)) return
   submitting.value = true
   try {
-    const payload = { ...form }
+    const { product_ids, ...rest } = form
+    const payload: Partial<AdminPost> & { product_ids?: number[] } = { ...rest }
+    // type=blog 提交当前选择的商品；其他类型显式置空，避免历史关联残留出现在商品页
+    payload.product_ids = form.type === 'blog' ? [...product_ids] : []
     if (isEditing.value) {
       await adminAPI.updatePost(form.id, payload)
     } else {
@@ -206,19 +294,12 @@ watch(
       </Button>
     </div>
 
-    <div class="overflow-x-auto">
-      <div class="flex w-max min-w-full gap-2 rounded-xl border border-border bg-card p-1">
-        <button
-          v-for="tab in ['blog', 'notice']"
-          :key="tab"
-          class="shrink-0 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-medium transition-colors"
-          :class="currentTab === tab ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'"
-          @click="currentTab = tab; pagination.page = 1; fetchPosts()"
-        >
-          {{ tab === 'blog' ? t('admin.posts.tabs.blog') : t('admin.posts.tabs.notice') }}
-        </button>
-      </div>
-    </div>
+    <Tabs v-model="currentTab" class="w-full">
+      <TabsList>
+        <TabsTrigger value="blog">{{ t('admin.posts.tabs.blog') }}</TabsTrigger>
+        <TabsTrigger value="notice">{{ t('admin.posts.tabs.notice') }}</TabsTrigger>
+      </TabsList>
+    </Tabs>
 
     <div class="rounded-xl border border-border bg-card overflow-x-auto">
       <Table class="min-w-[980px]">
@@ -241,7 +322,7 @@ watch(
           <TableRow v-else-if="posts.length === 0">
             <TableCell colspan="6" class="px-6 py-8 text-center text-muted-foreground">{{ t('admin.posts.empty') }}</TableCell>
           </TableRow>
-          <TableRow v-for="post in posts" :key="post.id" class="hover:bg-muted/30 group">
+          <TableRow v-for="post in posts" :key="post.id" class="hover:bg-muted/30">
             <TableCell class="px-6 py-4">
               <IdCell :value="post.id" />
             </TableCell>
@@ -267,7 +348,7 @@ watch(
             </TableCell>
             <TableCell class="min-w-[180px] px-6 py-4 text-xs text-muted-foreground">{{ formatDate(post.created_at) }}</TableCell>
             <TableCell class="min-w-[140px] px-6 py-4 text-right">
-              <div class="flex items-center justify-end gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+              <div class="flex items-center justify-end gap-2">
                 <Button size="icon-sm" variant="outline" @click="openEditModal(post)">
                   <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -284,45 +365,15 @@ watch(
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-col gap-3 border-t border-border px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">
-            {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-          </span>
-        </div>
-        <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-full sm:w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-8 w-full sm:w-auto"
-              :disabled="pagination.page >= pagination.total_page"
-              @click="changePage(pagination.page + 1)"
-            >
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <Dialog v-model:open="showModal" @update:open="(value) => { if (!value) closeModal() }">
@@ -394,8 +445,81 @@ watch(
               <RichEditor :model-value="form.content[currentLang] || ''" @update:model-value="(v: string) => form.content[currentLang] = v" :placeholder="t('admin.posts.form.contentPlaceholder')" />
             </div>
 
+            <div v-if="form.type === 'blog'" class="col-span-1 md:col-span-2 border-t border-border pt-4">
+              <label class="mb-1.5 block text-xs font-medium text-muted-foreground">
+                {{ t('admin.posts.form.relatedProducts') }}
+              </label>
+              <p class="mb-3 text-xs text-muted-foreground">
+                {{ t('admin.posts.form.relatedProductsHint') }}
+              </p>
+
+              <div v-if="relatedProducts.length" class="mb-3 space-y-2">
+                <div
+                  v-for="p in relatedProducts"
+                  :key="p.id"
+                  class="flex items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2"
+                >
+                  <div
+                    v-if="p.image"
+                    class="h-10 w-10 shrink-0 overflow-hidden rounded border border-border bg-muted/40"
+                  >
+                    <img :src="getImageUrl(p.image)" class="h-full w-full object-cover" />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-sm font-medium text-foreground">{{ getLocalizedText(p.title) }}</div>
+                    <div class="truncate font-mono text-xs text-muted-foreground">/{{ p.slug }}</div>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" @click="removeRelatedProduct(p.id)">
+                    {{ t('admin.posts.form.relatedProductsRemove') }}
+                  </Button>
+                </div>
+              </div>
+              <p v-else class="mb-3 text-sm text-muted-foreground">
+                {{ t('admin.posts.form.relatedProductsEmpty') }}
+              </p>
+
+              <Input v-model="productSearch" :placeholder="t('admin.posts.form.relatedProductsSearch')" />
+              <div v-if="productSearch.trim()" class="mt-2 max-h-60 overflow-y-auto rounded-md border border-border">
+                <div v-if="productSearchLoading" class="px-3 py-3 text-center text-xs text-muted-foreground">
+                  ...
+                </div>
+                <div
+                  v-else-if="!productSearchResults.length"
+                  class="px-3 py-3 text-center text-sm text-muted-foreground"
+                >
+                  {{ t('admin.posts.form.relatedProductsNoResults') }}
+                </div>
+                <div
+                  v-for="p in productSearchResults"
+                  :key="p.id"
+                  class="flex items-center gap-3 border-b border-border px-3 py-2 last:border-b-0 hover:bg-muted/40"
+                >
+                  <div
+                    v-if="p.image"
+                    class="h-10 w-10 shrink-0 overflow-hidden rounded border border-border bg-muted/40"
+                  >
+                    <img :src="getImageUrl(p.image)" class="h-full w-full object-cover" />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-sm font-medium text-foreground">{{ getLocalizedText(p.title) }}</div>
+                    <div class="truncate font-mono text-xs text-muted-foreground">/{{ p.slug }}</div>
+                  </div>
+                  <Button
+                    v-if="!form.product_ids.includes(p.id)"
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    @click="addRelatedProduct(p)"
+                  >
+                    {{ t('admin.posts.form.relatedProductsAdd') }}
+                  </Button>
+                  <span v-else class="text-xs text-muted-foreground">✓</span>
+                </div>
+              </div>
+            </div>
+
             <div class="col-span-1 flex items-center gap-2 border-t border-border pt-4 md:col-span-2">
-              <input v-model="form.is_published" type="checkbox" class="h-4 w-4 accent-primary" />
+              <Switch v-model="form.is_published" />
               <span class="text-sm text-muted-foreground">{{ t('admin.posts.form.publishNow') }}</span>
             </div>
           </div>

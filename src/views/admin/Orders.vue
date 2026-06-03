@@ -12,16 +12,20 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 import { copyText } from '@/utils/clipboard'
 import {
   orderStatusClass,
   orderStatusLabel,
 } from '@/utils/status'
 import { formatDate, formatMoney, getLocalizedText, toRFC3339 } from '@/utils/format'
+import { formatSkuDisplayLabel } from '@/utils/sku'
 import OrderDetailDialog from './components/OrderDetailDialog.vue'
 import OrderFulfillmentModal from './components/OrderFulfillmentModal.vue'
 
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const orders = ref<AdminOrder[]>([])
 const pagination = ref({
   page: 1,
@@ -29,7 +33,6 @@ const pagination = ref({
   total: 0,
   total_page: 1,
 })
-const jumpPage = ref('')
 const filters = reactive({
   orderNo: '',
   guestEmail: '',
@@ -51,10 +54,23 @@ const showDetail = ref(false)
 const showFulfillmentModal = ref(false)
 const selectedOrder = ref<AdminOrder | null>(null)
 const fulfillmentParentId = ref<number | null>(null)
+const maxRefundDays = ref(30)
 const route = useRoute()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const adminPath = import.meta.env.VITE_ADMIN_PATH || ''
 const userDetailLink = (userId: number) => `${adminPath}/users/${userId}`
+
+const itemSkuLabel = (item: AdminOrderItem & Record<string, unknown>) =>
+  formatSkuDisplayLabel((item as any)?.sku_snapshot, locale.value)
+
+const normalizeMaxRefundDays = (raw: unknown) => {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return 30
+  const normalized = Math.trunc(parsed)
+  if (normalized < 0) return 30
+  if (normalized > 3650) return 3650
+  return normalized
+}
 
 const normalizeFilterValue = (value: string) => (value === '__all__' ? '' : value)
 
@@ -74,8 +90,8 @@ const toQueryText = (value: unknown) => {
   return String(value).trim()
 }
 
-const fetchOrders = async (page = 1) => {
-  loading.value = true
+const fetchOrders = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   try {
     const response = await adminAPI.getOrders({
       page,
@@ -96,10 +112,21 @@ const fetchOrders = async (page = 1) => {
       statusEdits[order.id] = order.status
     })
   } catch (error) {
-    orders.value = []
-    pagination.value = { page: 1, page_size: pagination.value.page_size, total: 0, total_page: 0 }
+    if (!options.preserveRows) {
+      orders.value = []
+      pagination.value = { page: 1, page_size: pagination.value.page_size, total: 0, total_page: 0 }
+    }
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
+  }
+}
+
+const fetchRefundConfig = async () => {
+  try {
+    const res = await adminAPI.getSettings({ key: 'order_config' })
+    maxRefundDays.value = normalizeMaxRefundDays(res.data?.data?.max_refund_days)
+  } catch {
+    maxRefundDays.value = 30
   }
 }
 
@@ -109,7 +136,7 @@ const handleSearch = () => {
 const debouncedSearch = useDebounceFn(handleSearch, 300)
 
 const refresh = () => {
-  fetchOrders(pagination.value.page)
+  refreshList(() => fetchOrders(pagination.value.page, { preserveRows: true }))
 }
 
 const changePage = (page: number) => {
@@ -117,18 +144,17 @@ const changePage = (page: number) => {
   fetchOrders(page)
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.value.total_page)
-  if (target === pagination.value.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.value.page_size) return
+  pagination.value.page_size = size
+  fetchOrders(1)
 }
 
 const canUpdateStatus = (order: AdminOrder) => {
   if (!order) return false
-  return order.status !== 'completed' && order.status !== 'canceled'
+  return order.status !== 'completed' && order.status !== 'canceled' && order.status !== 'partially_refunded' && order.status !== 'refunded'
 }
 
 const updateStatus = async (order: AdminOrder) => {
@@ -213,6 +239,7 @@ onMounted(() => {
   const initialUserId = toQueryText(route.query.user_id)
   filters.userId = initialUserId
 
+  fetchRefundConfig()
   fetchOrders()
 
   const orderId = Number(route.query.order_id)
@@ -294,9 +321,11 @@ watch(
               <SelectItem value="paid">{{ t('order.status.paid') }}</SelectItem>
               <SelectItem value="fulfilling">{{ t('order.status.fulfilling') }}</SelectItem>
               <SelectItem value="partially_delivered">{{ t('order.status.partially_delivered') }}</SelectItem>
+              <SelectItem value="partially_refunded">{{ t('order.status.partially_refunded') }}</SelectItem>
               <SelectItem value="delivered">{{ t('order.status.delivered') }}</SelectItem>
               <SelectItem value="completed">{{ t('order.status.completed') }}</SelectItem>
               <SelectItem value="canceled">{{ t('order.status.canceled') }}</SelectItem>
+              <SelectItem value="refunded">{{ t('order.status.refunded') }}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -317,7 +346,7 @@ watch(
           </Select>
         </div>
         <div class="hidden flex-1 sm:block"></div>
-        <Button size="sm" class="w-full sm:w-auto" @click="refresh">{{ t('admin.common.refresh') }}</Button>
+        <Button size="sm" class="w-full sm:w-auto" :disabled="refreshing" @click="refresh">{{ t('admin.common.refresh') }}</Button>
       </div>
     </div>
 
@@ -361,9 +390,9 @@ watch(
             <TableCell class="min-w-[140px] px-4 py-3">
               <div v-if="order.items && order.items.length > 0" class="space-y-1">
                 <div v-for="item in order.items" :key="item.id" class="text-xs">
-                  <span class="text-foreground">{{ getLocalizedText(item.product_title) || getLocalizedText(item.title) || '-' }}</span>
-                  <span v-if="item.sku_spec_values && Object.keys(item.sku_spec_values).length > 0" class="ml-1 text-muted-foreground">
-                    ({{ Object.values(item.sku_spec_values).join(' / ') }})
+                  <span class="text-foreground">{{ getLocalizedText(item.title) || '-' }}</span>
+                  <span v-if="itemSkuLabel(item)" class="ml-1 text-muted-foreground">
+                    ({{ itemSkuLabel(item) }})
                   </span>
                   <span class="ml-1 text-muted-foreground">x{{ item.quantity }}</span>
                 </div>
@@ -401,9 +430,12 @@ watch(
                     <SelectItem value="pending_payment">{{ t('order.status.pending_payment') }}</SelectItem>
                     <SelectItem value="paid">{{ t('order.status.paid') }}</SelectItem>
                     <SelectItem value="fulfilling">{{ t('order.status.fulfilling') }}</SelectItem>
+                    <SelectItem value="partially_delivered">{{ t('order.status.partially_delivered') }}</SelectItem>
+                    <SelectItem value="partially_refunded">{{ t('order.status.partially_refunded') }}</SelectItem>
                     <SelectItem value="delivered">{{ t('order.status.delivered') }}</SelectItem>
                     <SelectItem value="completed">{{ t('order.status.completed') }}</SelectItem>
                     <SelectItem value="canceled">{{ t('order.status.canceled') }}</SelectItem>
+                    <SelectItem value="refunded">{{ t('order.status.refunded') }}</SelectItem>
                   </SelectContent>
                 </Select>
                 <Button v-if="canUpdateStatus(order)" size="xs" variant="outline" @click="updateStatus(order)">
@@ -424,51 +456,22 @@ watch(
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-col gap-3 border-t border-border px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">
-            {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-          </span>
-        </div>
-        <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-full sm:w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-8 w-full sm:w-auto"
-              :disabled="pagination.page >= pagination.total_page"
-              @click="changePage(pagination.page + 1)"
-            >
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <OrderDetailDialog
       :model-value="showDetail"
       :order="selectedOrder"
       site-currency=""
+      :max-refund-days="maxRefundDays"
       @update:model-value="handleDetailClose"
       @refresh="refresh"
       @open-fulfillment="handleDetailOpenFulfillment"

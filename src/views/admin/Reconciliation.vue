@@ -9,12 +9,16 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogScrollContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { notifyError, notifySuccess } from '@/utils/notify'
+import ComplianceGuardWrapper from '@/components/ComplianceGuardWrapper.vue'
 
 const { t } = useI18n()
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const jobs = ref<(AdminReconciliationJob & Record<string, unknown>)[]>([])
 const pagination = reactive({
   page: 1,
@@ -22,8 +26,6 @@ const pagination = reactive({
   total: 0,
   total_page: 1,
 })
-const jumpPage = ref('')
-
 const filters = reactive({
   status: '__all__',
   type: '__all__',
@@ -90,8 +92,8 @@ const resolveItemId = ref<number | null>(null)
 const resolveRemark = ref('')
 const resolving = ref(false)
 
-const fetchJobs = async (page = 1) => {
-  loading.value = true
+const fetchJobs = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   try {
     const params: Record<string, unknown> = { page, page_size: pagination.page_size }
     if (filters.status && filters.status !== '__all__') params.status = filters.status
@@ -108,9 +110,9 @@ const fetchJobs = async (page = 1) => {
       pagination.total_page = p.total_page
     }
   } catch {
-    jobs.value = []
+    if (!options.preserveRows) jobs.value = []
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
@@ -119,17 +121,16 @@ const changePage = (page: number) => {
   fetchJobs(page)
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.total_page)
-  if (target === pagination.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.page_size) return
+  pagination.page_size = size
+  fetchJobs(1)
 }
 
-const handleSearch = () => {
-  fetchJobs(1)
+const refresh = () => {
+  refreshList(() => fetchJobs(1, { preserveRows: true }))
 }
 
 const handleNewJob = async () => {
@@ -256,6 +257,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <ComplianceGuardWrapper>
   <div class="space-y-6">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h1 class="text-2xl font-semibold">{{ t('reconciliation.title') }}</h1>
@@ -304,7 +306,7 @@ onMounted(() => {
           </SelectContent>
         </Select>
       </div>
-      <Button size="sm" class="h-9 w-full sm:w-auto" @click="handleSearch">{{ t('admin.common.refresh') }}</Button>
+      <Button size="sm" class="h-9 w-full sm:w-auto" :disabled="refreshing" @click="refresh">{{ t('admin.common.refresh') }}</Button>
     </div>
 
     <!-- Table -->
@@ -377,21 +379,15 @@ onMounted(() => {
       </Table>
 
       <!-- Pagination -->
-      <div v-if="pagination.total_page > 1" class="flex flex-wrap items-center justify-between gap-3 border-t border-border px-6 py-4">
-        <span class="text-xs text-muted-foreground">
-          {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-        </span>
-        <div class="flex flex-wrap items-center gap-2">
-          <Input v-model="jumpPage" type="number" min="1" :max="pagination.total_page" class="h-8 w-20" :placeholder="t('admin.common.jumpPlaceholder')" />
-          <Button variant="outline" size="sm" class="h-8" @click="jumpToPage">{{ t('admin.common.jumpTo') }}</Button>
-          <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-            {{ t('admin.common.prevPage') }}
-          </Button>
-          <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page >= pagination.total_page" @click="changePage(pagination.page + 1)">
-            {{ t('admin.common.nextPage') }}
-          </Button>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <!-- New Job Dialog -->
@@ -597,4 +593,5 @@ onMounted(() => {
       </DialogScrollContent>
     </Dialog>
   </div>
+  </ComplianceGuardWrapper>
 </template>

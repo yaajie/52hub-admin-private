@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import FileInput from '@/components/FileInput.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -25,6 +27,7 @@ const batchForm = ref({
   secrets: '',
   batch_no: '',
   note: '',
+  deduplicate: true,
 })
 const batchSubmitting = ref(false)
 const batchError = ref('')
@@ -35,17 +38,17 @@ const importForm = ref({
   file: null as File | null,
   batch_no: '',
   note: '',
+  deduplicate: true,
 })
 const importSubmitting = ref(false)
 const importError = ref('')
 const importSuccess = ref('')
-const fileInput = ref<HTMLInputElement | null>(null)
-const importFileLabel = computed(() => importForm.value.file?.name || t('admin.cardSecrets.csvPlaceholder'))
 
 const resetBatchForm = () => {
   batchForm.value.secrets = ''
   batchForm.value.batch_no = ''
   batchForm.value.note = ''
+  batchForm.value.deduplicate = true
   batchError.value = ''
   batchSuccess.value = ''
 }
@@ -78,6 +81,7 @@ const handleBatchCreate = async () => {
       secrets,
       batch_no: batchForm.value.batch_no.trim(),
       note: batchForm.value.note.trim(),
+      deduplicate: batchForm.value.deduplicate,
     })
     batchSuccess.value = t('admin.cardSecrets.success.batchCreated')
     batchForm.value.secrets = ''
@@ -89,28 +93,21 @@ const handleBatchCreate = async () => {
   }
 }
 
-const handleFileChange = (event: Event) => {
-  const target = event.target as HTMLInputElement
-  const file = target.files && target.files[0]
-  importForm.value.file = file || null
-}
-
-const triggerImportFile = () => {
-  fileInput.value?.click()
+const handleFileChange = (files: FileList | null) => {
+  importForm.value.file = (files && files[0]) || null
 }
 
 const clearImportFile = () => {
   importForm.value.file = null
-  if (fileInput.value) fileInput.value.value = ''
 }
 
 const resetImportForm = () => {
   clearImportFile()
   importForm.value.batch_no = ''
   importForm.value.note = ''
+  importForm.value.deduplicate = true
   importError.value = ''
   importSuccess.value = ''
-  if (fileInput.value) fileInput.value.value = ''
 }
 
 const handleImport = async () => {
@@ -138,6 +135,7 @@ const handleImport = async () => {
     }
     formData.append('batch_no', importForm.value.batch_no.trim())
     formData.append('note', importForm.value.note.trim())
+    formData.append('deduplicate', String(importForm.value.deduplicate))
     formData.append('file', importForm.value.file)
     await adminAPI.importCardSecretCSV(formData)
     importSuccess.value = t('admin.cardSecrets.success.imported')
@@ -171,6 +169,15 @@ const handleImport = async () => {
             <Input v-model="batchForm.note" :placeholder="t('admin.cardSecrets.notePlaceholder')" />
           </div>
         </div>
+        <div class="flex items-start justify-between gap-4 border-y border-border py-3">
+          <div>
+            <label for="card-secret-batch-deduplicate" class="text-sm font-medium text-foreground">
+              {{ t('admin.cardSecrets.deduplicateLabel') }}
+            </label>
+            <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.cardSecrets.deduplicateHint') }}</p>
+          </div>
+          <Switch id="card-secret-batch-deduplicate" v-model="batchForm.deduplicate" class="mt-0.5" />
+        </div>
         <div v-if="batchError" class="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
           {{ batchError }}
         </div>
@@ -192,12 +199,14 @@ const handleImport = async () => {
       <form class="space-y-4" @submit.prevent="handleImport">
         <div>
           <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.cardSecrets.csvLabel') }} *</label>
-          <div class="flex flex-wrap items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm">
-            <Button type="button" size="sm" variant="outline" @click="triggerImportFile">{{ t('admin.cardSecrets.csvChoose') }}</Button>
-            <span class="flex-1 truncate" :class="importForm.file ? 'text-foreground' : 'text-muted-foreground'">{{ importFileLabel }}</span>
+          <div class="flex flex-wrap items-center gap-2">
+            <FileInput
+              accept=".csv"
+              :button-text="t('admin.cardSecrets.csvChoose')"
+              @change="handleFileChange"
+            />
             <Button v-if="importForm.file" type="button" size="sm" variant="ghost" @click="clearImportFile">{{ t('admin.cardSecrets.csvClear') }}</Button>
           </div>
-          <input ref="fileInput" type="file" accept=".csv" class="hidden" @change="handleFileChange" />
           <p class="mt-2 text-xs text-muted-foreground">{{ t('admin.cardSecrets.csvHint') }}</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -209,6 +218,15 @@ const handleImport = async () => {
             <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.cardSecrets.noteLabel') }}</label>
             <Input v-model="importForm.note" :placeholder="t('admin.cardSecrets.importNotePlaceholder')" />
           </div>
+        </div>
+        <div class="flex items-start justify-between gap-4 border-y border-border py-3">
+          <div>
+            <label for="card-secret-csv-deduplicate" class="text-sm font-medium text-foreground">
+              {{ t('admin.cardSecrets.deduplicateLabel') }}
+            </label>
+            <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.cardSecrets.deduplicateHint') }}</p>
+          </div>
+          <Switch id="card-secret-csv-deduplicate" v-model="importForm.deduplicate" class="mt-0.5" />
         </div>
         <div v-if="importError" class="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
           {{ importError }}

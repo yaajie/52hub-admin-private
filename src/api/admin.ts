@@ -27,13 +27,46 @@ export interface AdminLoginRequest {
   captcha_payload?: CaptchaPayload
 }
 
-export interface AdminLoginResponse {
+export interface AdminLoginPasswordResponse {
+  requires_totp: false
   token: string
   user: {
     id: number
     username: string
   }
   expires_at: string
+}
+
+export interface AdminLoginChallengeResponse {
+  requires_totp: true
+  challenge_token: string
+  challenge_expires_at: string
+}
+
+export type AdminLoginResponse = AdminLoginPasswordResponse | AdminLoginChallengeResponse
+
+export interface TwoFAStatus {
+  enabled: boolean
+  enabled_at?: string
+  recovery_codes_remaining: number
+  recovery_codes_total: number
+}
+
+export interface SetupTwoFAResponse {
+  secret: string
+  otpauth_url: string
+  expires_at: string
+}
+
+export interface EnableTwoFAResponse {
+  enabled_at: string
+  recovery_codes: string[]
+}
+
+export interface Verify2FAPayload {
+  challenge_token: string
+  code?: string
+  recovery_code?: string
 }
 
 export interface AdminAuthzPolicy {
@@ -56,6 +89,8 @@ export interface AdminAuthzAdmin {
   last_login_at?: string
   created_at?: string
   roles?: string[]
+  totp_enabled?: boolean
+  totp_enabled_at?: string
 }
 
 export interface AuthzCreateAdminRequest {
@@ -158,6 +193,11 @@ export interface AdminRefundToWalletPayload {
   remark?: string
 }
 
+export interface AdminManualRefundPayload {
+  amount: string
+  remark?: string
+}
+
 export interface AdminBatchCardSecretStatusPayload {
   ids?: number[]
   batch_id?: number
@@ -220,8 +260,33 @@ export interface AdminAffiliateSetting {
   withdraw_channels: string[]
 }
 
+export interface ComplianceStatus {
+  acknowledged: boolean
+  acknowledged_at?: string
+  acknowledged_by_admin_id?: number
+  acknowledged_by_username?: string
+  version?: string
+}
+
+export interface ComplianceAcknowledgePayload {
+  segment1: string
+  segment2: string
+  segment3: string
+}
+
 export const adminAPI = {
   login: (data: AdminLoginRequest) => api.post('/admin/login', data),
+  verify2FA: (data: Verify2FAPayload) => api.post('/admin/login/verify-2fa', data),
+  // 合规声明
+  getComplianceStatus: () => api.get('/admin/compliance/status'),
+  acknowledgeCompliance: (data: ComplianceAcknowledgePayload) =>
+    api.post('/admin/compliance/acknowledge', data),
+  get2FAStatus: () => api.get('/admin/2fa/status'),
+  setup2FA: () => api.post('/admin/2fa/setup', {}),
+  enable2FA: (data: { code: string }) => api.post('/admin/2fa/enable', data),
+  disable2FA: (data: { code?: string; recovery_code?: string }) => api.post('/admin/2fa/disable', data),
+  regenerateRecoveryCodes: (data: { code: string }) => api.post('/admin/2fa/recovery-codes/regenerate', data),
+  resetAdmin2FA: (id: number) => api.post(`/admin/authz/admins/${id}/2fa/reset`, {}),
   getAuthzMe: () => api.get('/admin/authz/me'),
   listAuthzRoles: () => api.get('/admin/authz/roles'),
   listAuthzAdmins: () => api.get("/admin/authz/admins"),
@@ -262,12 +327,14 @@ export const adminAPI = {
   getCategories: (params?: Record<string, unknown>) => api.get('/admin/categories', { params }),
   createCategory: (data: Partial<AdminCategory>) => api.post('/admin/categories', data),
   updateCategory: (id: number, data: Partial<AdminCategory>) => api.put(`/admin/categories/${id}`, data),
+  patchCategoryActive: (id: number, isActive: boolean) => api.patch(`/admin/categories/${id}/active`, { is_active: isActive }),
   deleteCategory: (id: number) => api.delete(`/admin/categories/${id}`),
   getPosts: (params?: Record<string, unknown>) => api.get('/admin/posts', { params }),
   getPost: (id: number) => api.get(`/admin/posts/${id}`),
-  createPost: (data: Partial<AdminPost>) => api.post('/admin/posts', data),
-  updatePost: (id: number, data: Partial<AdminPost>) => api.put(`/admin/posts/${id}`, data),
+  createPost: (data: Partial<AdminPost> & { product_ids?: number[] }) => api.post('/admin/posts', data),
+  updatePost: (id: number, data: Partial<AdminPost> & { product_ids?: number[] }) => api.put(`/admin/posts/${id}`, data),
   deletePost: (id: number) => api.delete(`/admin/posts/${id}`),
+  getPostRelatedProducts: (id: number) => api.get(`/admin/posts/${id}/products`),
   getBanners: (params?: Record<string, unknown>) => api.get('/admin/banners', { params }),
   getBanner: (id: number) => api.get(`/admin/banners/${id}`),
   createBanner: (data: Partial<AdminBanner>) => api.post('/admin/banners', data),
@@ -275,6 +342,8 @@ export const adminAPI = {
   deleteBanner: (id: number) => api.delete(`/admin/banners/${id}`),
   getSettings: (params?: Record<string, unknown>) => api.get('/admin/settings', { params }),
   updateSettings: (data: Record<string, unknown>) => api.put('/admin/settings', data),
+  getHomeAnnouncement: () => api.get('/admin/settings', { params: { key: 'home_announcement' } }),
+  updateHomeAnnouncement: (value: Record<string, unknown>) => api.put('/admin/settings', { key: 'home_announcement', value }),
   getSMTPSettings: () => api.get('/admin/settings/smtp'),
   updateSMTPSettings: (data: Record<string, unknown>) => api.put('/admin/settings/smtp', data),
   testSMTPSettings: (data: Record<string, unknown>) => api.post('/admin/settings/smtp/test', data),
@@ -293,6 +362,9 @@ export const adminAPI = {
   updateAffiliateSettings: (data: AdminAffiliateSetting) => api.put('/admin/settings/affiliate', data),
   getPublicConfig: () => api.get('/public/config'),
   getImageCaptcha: () => api.get('/public/captcha/image'),
+  getSystemVersion: () => api.get('/admin/system/version'),
+  checkSystemUpdate: (params?: { owner?: string; repo?: string }) =>
+    api.get('/admin/system/version/check', { params }),
   getDashboardOverview: (params?: Record<string, unknown>) => api.get('/admin/dashboard/overview', { params }),
   getDashboardTrends: (params?: Record<string, unknown>) => api.get('/admin/dashboard/trends', { params }),
   getDashboardRankings: (params?: Record<string, unknown>) => api.get('/admin/dashboard/rankings', { params }),
@@ -322,6 +394,8 @@ export const adminAPI = {
   adjustUserWallet: (id: number, data: AdminAdjustWalletPayload) =>
     api.post(`/admin/users/${id}/wallet/adjust`, data),
   updateUser: (id: number, data: Partial<AdminUser>) => api.put(`/admin/users/${id}`, data),
+  unbindUserTelegram: (id: number) => api.delete(`/admin/users/${id}/oauth/telegram`),
+  resetUser2FA: (id: number) => api.delete(`/admin/users/${id}/2fa`),
   batchUpdateUserStatus: (data: { user_ids: number[]; status: string }) => api.put('/admin/users/batch-status', data),
   getUserCouponUsages: (id: number, params?: Record<string, unknown>) => api.get(`/admin/users/${id}/coupon-usages`, { params }),
   getAffiliateUsers: (params?: Record<string, unknown>) => api.get('/admin/affiliates/users', { params }),
@@ -335,6 +409,10 @@ export const adminAPI = {
   payAffiliateWithdraw: (id: number) => api.post(`/admin/affiliates/withdraws/${id}/pay`, {}),
   refundOrderToWallet: (id: number, data: AdminRefundToWalletPayload) =>
     api.post(`/admin/orders/${id}/refund-to-wallet`, data),
+  manualRefundOrder: (id: number, data: AdminManualRefundPayload) =>
+    api.post(`/admin/orders/${id}/manual-refund`, data),
+  getOrderRefunds: (params?: Record<string, unknown>) => api.get('/admin/order-refunds', { params }),
+  getOrderRefund: (id: number) => api.get(`/admin/order-refunds/${id}`),
   createCoupon: (data: Partial<AdminCoupon>) => api.post('/admin/coupons', data),
   getCoupons: (params?: Record<string, unknown>) => api.get('/admin/coupons', { params }),
   updateCoupon: (id: number, data: Partial<AdminCoupon>) => api.put(`/admin/coupons/${id}`, data),
@@ -363,7 +441,7 @@ export const adminAPI = {
   deleteMemberLevelPrice: (id: number) => api.delete(`/admin/member-level-prices/${id}`),
   setUserMemberLevel: (userId: number, memberLevelId: number) => api.put(`/admin/users/${userId}/member-level`, { member_level_id: memberLevelId }),
   backfillMemberLevels: () => api.post('/admin/member-levels/backfill'),
-  createCardSecretBatch: (data: { product_id: number; sku_id?: number; name?: string; secrets: string[]; batch_no?: string; note?: string }) => api.post('/admin/card-secrets/batch', data),
+  createCardSecretBatch: (data: { product_id: number; sku_id?: number; name?: string; secrets: string[]; batch_no?: string; note?: string; deduplicate?: boolean }) => api.post('/admin/card-secrets/batch', data),
   importCardSecretCSV: (formData: FormData) =>
     api.post('/admin/card-secrets/import', formData),
   getCardSecrets: (params?: Record<string, unknown>) => api.get('/admin/card-secrets', { params }),
@@ -402,6 +480,7 @@ export const adminAPI = {
   batchImportByCategory: (data: Record<string, unknown>) => api.post('/admin/product-mappings/batch-import-by-category', data),
   // Procurement Orders
   getProcurementOrders: (params?: Record<string, unknown>) => api.get('/admin/procurement-orders', { params }),
+  getProcurementOrderStats: (params?: Record<string, unknown>) => api.get('/admin/procurement-orders/stats', { params }),
   getProcurementOrder: (id: number) => api.get(`/admin/procurement-orders/${id}`),
   downloadProcurementUpstreamPayload: (id: number) => api.get(`/admin/procurement-orders/${id}/upstream-payload/download`, { blob: true }),
   retryProcurementOrder: (id: number) => api.post(`/admin/procurement-orders/${id}/retry`),

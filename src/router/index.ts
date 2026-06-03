@@ -60,6 +60,18 @@ const routes = [
         meta: { permission: 'GET:/admin/orders' },
       },
       {
+        path: 'order-risk-control',
+        name: 'order-risk-control',
+        component: () => import('@/views/admin/OrderRiskControl.vue'),
+        meta: { permission: 'GET:/admin/settings' },
+      },
+      {
+        path: 'order-refunds',
+        name: 'order-refunds',
+        component: () => import('@/views/admin/OrderRefunds.vue'),
+        meta: { permission: 'GET:/admin/order-refunds' },
+      },
+      {
         path: 'payments',
         name: 'payments',
         component: () => import('@/views/admin/Payments.vue'),
@@ -72,10 +84,22 @@ const routes = [
         meta: { permission: 'GET:/admin/wallet/recharges' },
       },
       {
+        path: 'wallet-config',
+        name: 'wallet-config',
+        component: () => import('@/views/admin/Wallet.vue'),
+        meta: { permission: 'GET:/admin/settings' },
+      },
+      {
         path: 'payment-channels',
         name: 'payment-channels',
         component: () => import('@/views/admin/PaymentChannels.vue'),
         meta: { permission: 'GET:/admin/payment-channels' },
+      },
+      {
+        path: 'callback-routes',
+        name: 'callback-routes',
+        component: () => import('@/views/admin/CallbackRoutes.vue'),
+        meta: { permission: 'GET:/admin/settings' },
       },
       {
         path: 'users',
@@ -268,14 +292,31 @@ const routes = [
         component: () => import('@/views/admin/TelegramBotBroadcastDetail.vue'),
         meta: { permission: 'GET:/admin/telegram-bot/broadcasts' },
       },
+      {
+        path: 'compliance-required',
+        name: 'compliance-required',
+        component: () => import('@/views/admin/ComplianceRequired.vue'),
+      },
     ],
   },
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(
+    document.querySelector('base')?.getAttribute('href') ?? import.meta.env.BASE_URL,
+  ),
   routes,
 })
+
+const PAYMENT_PROTECTED_ROUTE_NAMES = new Set<string>([
+  'payments',
+  'payment-channels',
+  'wallet-config',
+  'wallet-recharges',
+  'reconciliation',
+  'affiliates-withdraws',
+  'affiliates-commissions',
+])
 
 router.beforeEach(async (to) => {
   const authStore = useAdminAuthStore()
@@ -307,6 +348,23 @@ router.beforeEach(async (to) => {
         },
       }
     }
+  }
+
+  // 合规声明拦截：受保护路由 + 非超管 + 未确认 → 跳转提示页
+  if (PAYMENT_PROTECTED_ROUTE_NAMES.has(String(to.name))) {
+    const { useComplianceStore } = await import('@/stores/compliance')
+    const compliance = useComplianceStore()
+    if (!compliance.loaded) {
+      try {
+        await compliance.fetchStatus()
+      } catch {
+        /* 服务异常时不阻塞导航，由页面 wrapper 兜底 */
+      }
+    }
+    if (!compliance.acknowledged && !authStore.isSuper) {
+      return { name: 'compliance-required' }
+    }
+    // 超管未确认：放行，由页面 wrapper 弹窗拦截
   }
 
   return true

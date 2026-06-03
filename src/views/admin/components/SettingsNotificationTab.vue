@@ -5,7 +5,9 @@ import { adminAPI } from '@/api/admin'
 import type { AdminProduct } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { getLocalizedText } from '@/utils/format'
 import { notifyError, notifySuccess } from '@/utils/notify'
@@ -22,6 +24,8 @@ interface NotificationData {
   default_locale: string
   dedupe_ttl_seconds: number
   inventory_alert_interval_seconds: number
+  payment_order_alert_interval_seconds: number
+  payment_order_alert_check_interval_seconds: number
   ignored_product_ids_text: string
   channels: {
     email: {
@@ -83,6 +87,8 @@ const form = reactive({
   default_locale: 'zh-CN',
   dedupe_ttl_seconds: 300,
   inventory_alert_interval_seconds: 1800,
+  payment_order_alert_interval_seconds: 1800,
+  payment_order_alert_check_interval_seconds: 86400,
   ignored_product_ids_text: '',
   channels: {
     email: {
@@ -112,6 +118,8 @@ const syncFromProps = () => {
   form.default_locale = props.data.default_locale
   form.dedupe_ttl_seconds = props.data.dedupe_ttl_seconds
   form.inventory_alert_interval_seconds = props.data.inventory_alert_interval_seconds
+  form.payment_order_alert_interval_seconds = props.data.payment_order_alert_interval_seconds
+  form.payment_order_alert_check_interval_seconds = props.data.payment_order_alert_check_interval_seconds
   form.ignored_product_ids_text = props.data.ignored_product_ids_text
   form.channels.email.enabled = props.data.channels.email.enabled
   form.channels.email.recipients_text = props.data.channels.email.recipients_text
@@ -239,6 +247,8 @@ const save = async () => {
       default_locale: form.default_locale,
       dedupe_ttl_seconds: Number(form.dedupe_ttl_seconds),
       inventory_alert_interval_seconds: Number(form.inventory_alert_interval_seconds),
+      payment_order_alert_interval_seconds: Number(form.payment_order_alert_interval_seconds),
+      payment_order_alert_check_interval_seconds: Number(form.payment_order_alert_check_interval_seconds),
       ignored_product_ids: splitNumericIDs(form.ignored_product_ids_text),
       channels: {
         email: {
@@ -283,11 +293,16 @@ defineExpose({ save, submitting })
         <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
           <div class="space-y-2">
             <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.notification.defaultLocale') }}</label>
-            <select v-model="form.default_locale" class="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
-              <option value="zh-CN">{{ t('admin.common.lang.zhCN') }}</option>
-              <option value="zh-TW">{{ t('admin.common.lang.zhTW') }}</option>
-              <option value="en-US">{{ t('admin.common.lang.enUS') }}</option>
-            </select>
+            <Select v-model="form.default_locale">
+              <SelectTrigger class="h-10">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="zh-CN">{{ t('admin.common.lang.zhCN') }}</SelectItem>
+                <SelectItem value="zh-TW">{{ t('admin.common.lang.zhTW') }}</SelectItem>
+                <SelectItem value="en-US">{{ t('admin.common.lang.enUS') }}</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div class="space-y-2">
             <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.notification.dedupeTTLSeconds') }}</label>
@@ -352,16 +367,32 @@ defineExpose({ save, submitting })
           </div>
         </div>
 
+        <div class="rounded-xl border border-border bg-muted/20 p-4">
+          <h3 class="text-sm font-semibold">{{ t('admin.settings.notification.paymentOrder.title') }}</h3>
+          <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2">
+            <div class="space-y-2">
+              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.notification.paymentOrder.checkIntervalSeconds') }}</label>
+              <Input v-model.number="form.payment_order_alert_check_interval_seconds" type="number" min="60" max="604800" />
+              <p class="text-xs text-muted-foreground">{{ t('admin.settings.notification.paymentOrder.checkIntervalHint') }}</p>
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.notification.paymentOrder.intervalSeconds') }}</label>
+              <Input v-model.number="form.payment_order_alert_interval_seconds" type="number" min="60" max="604800" />
+              <p class="text-xs text-muted-foreground">{{ t('admin.settings.notification.paymentOrder.intervalHint') }}</p>
+            </div>
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
           <div class="rounded-xl border border-border">
             <div class="border-b border-border bg-muted/30 px-4 py-3">
               <h3 class="text-sm font-semibold">{{ t('admin.settings.notification.channels.email.title') }}</h3>
             </div>
             <div class="space-y-3 p-4">
-              <label class="flex items-center gap-2 text-sm">
-                <input v-model="form.channels.email.enabled" type="checkbox" class="h-4 w-4 accent-primary" />
-                {{ t('admin.settings.notification.channels.email.enabled') }}
-              </label>
+              <div class="flex items-center gap-2">
+                <Switch v-model="form.channels.email.enabled" />
+                <Label class="text-sm">{{ t('admin.settings.notification.channels.email.enabled') }}</Label>
+              </div>
               <div class="space-y-2">
                 <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.notification.channels.email.recipients') }}</label>
                 <Textarea
@@ -378,10 +409,10 @@ defineExpose({ save, submitting })
               <h3 class="text-sm font-semibold">{{ t('admin.settings.notification.channels.telegram.title') }}</h3>
             </div>
             <div class="space-y-3 p-4">
-              <label class="flex items-center gap-2 text-sm">
-                <input v-model="form.channels.telegram.enabled" type="checkbox" class="h-4 w-4 accent-primary" />
-                {{ t('admin.settings.notification.channels.telegram.enabled') }}
-              </label>
+              <div class="flex items-center gap-2">
+                <Switch v-model="form.channels.telegram.enabled" />
+                <Label class="text-sm">{{ t('admin.settings.notification.channels.telegram.enabled') }}</Label>
+              </div>
               <div class="space-y-2">
                 <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.notification.channels.telegram.recipients') }}</label>
                 <Textarea
@@ -397,22 +428,22 @@ defineExpose({ save, submitting })
         <div class="rounded-xl border border-border bg-muted/20 p-4">
           <h3 class="text-sm font-semibold">{{ t('admin.settings.notification.scenes.title') }}</h3>
           <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label class="flex items-center gap-2 text-sm">
-              <input v-model="form.scenes.wallet_recharge_success" type="checkbox" class="h-4 w-4 accent-primary" />
-              {{ t('admin.settings.notification.scenes.walletRechargeSuccess') }}
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <input v-model="form.scenes.order_paid_success" type="checkbox" class="h-4 w-4 accent-primary" />
-              {{ t('admin.settings.notification.scenes.orderPaidSuccess') }}
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <input v-model="form.scenes.manual_fulfillment_pending" type="checkbox" class="h-4 w-4 accent-primary" />
-              {{ t('admin.settings.notification.scenes.manualFulfillmentPending') }}
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <input v-model="form.scenes.exception_alert" type="checkbox" class="h-4 w-4 accent-primary" />
-              {{ t('admin.settings.notification.scenes.exceptionAlert') }}
-            </label>
+            <div class="flex items-center gap-2 text-sm">
+              <Switch v-model="form.scenes.wallet_recharge_success" />
+              <Label class="text-sm">{{ t('admin.settings.notification.scenes.walletRechargeSuccess') }}</Label>
+            </div>
+            <div class="flex items-center gap-2 text-sm">
+              <Switch v-model="form.scenes.order_paid_success" />
+              <Label class="text-sm">{{ t('admin.settings.notification.scenes.orderPaidSuccess') }}</Label>
+            </div>
+            <div class="flex items-center gap-2 text-sm">
+              <Switch v-model="form.scenes.manual_fulfillment_pending" />
+              <Label class="text-sm">{{ t('admin.settings.notification.scenes.manualFulfillmentPending') }}</Label>
+            </div>
+            <div class="flex items-center gap-2 text-sm">
+              <Switch v-model="form.scenes.exception_alert" />
+              <Label class="text-sm">{{ t('admin.settings.notification.scenes.exceptionAlert') }}</Label>
+            </div>
           </div>
           <p class="mt-3 text-xs text-muted-foreground">{{ t('admin.settings.notification.scenes.exceptionThresholdHint') }}</p>
         </div>

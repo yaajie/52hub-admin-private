@@ -3,6 +3,7 @@ import { onMounted, reactive, ref, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { Copy } from 'lucide-vue-next'
 import { adminAPI } from '@/api/admin'
 import type { AdminPayment } from '@/api/types'
 import IdCell from '@/components/IdCell.vue'
@@ -12,11 +13,16 @@ import { Dialog, DialogScrollContent, DialogHeader, DialogTitle } from '@/compon
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { paymentStatusClass, paymentStatusLabel } from '@/utils/status'
+import ComplianceGuardWrapper from '@/components/ComplianceGuardWrapper.vue'
+import { copyText } from '@/utils/clipboard'
 import { formatDate, toRFC3339 } from '@/utils/format'
 
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const payments = ref<AdminPayment[]>([])
 const pagination = ref({
   page: 1,
@@ -24,7 +30,6 @@ const pagination = ref({
   total: 0,
   total_page: 1,
 })
-const jumpPage = ref('')
 const adminPath = import.meta.env.VITE_ADMIN_PATH || ''
 const filters = reactive({
   userId: '',
@@ -45,8 +50,8 @@ const detailPayment = ref<AdminPayment | null>(null)
 const exporting = ref(false)
 const exportError = ref('')
 
-const fetchPayments = async (page = 1) => {
-  loading.value = true
+const fetchPayments = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   try {
     const response = await adminAPI.getPayments({
       page,
@@ -62,9 +67,9 @@ const fetchPayments = async (page = 1) => {
     payments.value = response.data.data || []
     pagination.value = response.data.pagination || pagination.value
   } catch (error) {
-    payments.value = []
+    if (!options.preserveRows) payments.value = []
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
@@ -74,7 +79,7 @@ const handleSearch = () => {
 const debouncedSearch = useDebounceFn(handleSearch, 300)
 
 const refresh = () => {
-  fetchPayments(pagination.value.page)
+  refreshList(() => fetchPayments(pagination.value.page, { preserveRows: true }))
 }
 
 const changePage = (page: number) => {
@@ -82,16 +87,16 @@ const changePage = (page: number) => {
   fetchPayments(page)
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.value.total_page)
-  if (target === pagination.value.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.value.page_size) return
+  pagination.value.page_size = size
+  fetchPayments(1)
 }
 
 const orderLink = (orderId: number) => `${adminPath}/orders?order_id=${orderId}`
+const userDetailLink = (userId: number) => `${adminPath}/users/${userId}`
 const channelLink = (channelId: number) => `${adminPath}/payment-channels?channel_id=${channelId}`
 
 const handleExport = async () => {
@@ -183,6 +188,11 @@ const channelTypeLabel = (value?: string) => {
   return map[value] || value
 }
 
+const handleCopyOrderNo = async (orderNo?: string) => {
+  if (!orderNo) return
+  try { await copyText(orderNo) } catch {}
+}
+
 const interactionModeLabel = (value?: string) => {
   const map: Record<string, string> = {
     qr: t('admin.paymentChannels.interactionModes.qr'),
@@ -269,6 +279,7 @@ watch(
 </script>
 
 <template>
+  <ComplianceGuardWrapper>
   <div class="space-y-6">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h1 class="text-2xl font-semibold">{{ t('admin.payments.title') }}</h1>
@@ -334,7 +345,7 @@ watch(
           </Select>
         </div>
         <div class="hidden flex-1 sm:block"></div>
-        <Button size="sm" variant="outline" class="w-full sm:w-auto" @click="refresh">{{ t('admin.common.refresh') }}</Button>
+        <Button size="sm" variant="outline" class="w-full sm:w-auto" :disabled="refreshing" @click="refresh">{{ t('admin.common.refresh') }}</Button>
         <Button size="sm" :disabled="exporting" @click="handleExport">
           {{ exporting ? t('admin.payments.exporting') : t('admin.payments.export') }}
         </Button>
@@ -383,7 +394,15 @@ watch(
               <span v-else>-</span>
               <div v-if="payment.recharge_no" class="text-xs text-muted-foreground mt-1">
                 {{ t('admin.payments.rechargeUser') }}:
-                <span v-if="payment.recharge_user_id" class="font-mono">#{{ payment.recharge_user_id }}</span>
+                <a
+                  v-if="payment.recharge_user_id"
+                  :href="userDetailLink(payment.recharge_user_id)"
+                  target="_blank"
+                  rel="noopener"
+                  class="font-mono text-primary underline-offset-4 hover:underline"
+                >
+                  #{{ payment.recharge_user_id }}
+                </a>
                 <span v-else>-</span>
               </div>
               <div v-if="payment.recharge_no && payment.recharge_status" class="text-xs text-muted-foreground mt-0.5">
@@ -419,45 +438,15 @@ watch(
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-col gap-3 border-t border-border px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">
-            {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-          </span>
-        </div>
-        <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-full sm:w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-8 w-full sm:w-auto"
-              :disabled="pagination.page >= pagination.total_page"
-              @click="changePage(pagination.page + 1)"
-            >
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <Dialog v-model:open="showDetail" @update:open="(value) => { if (!value) closeDetail() }">
@@ -484,15 +473,33 @@ watch(
                 <CardContent class="p-4">
                   <div class="text-xs text-muted-foreground mb-2">{{ t('admin.payments.detailOrderId') }}</div>
                   <div class="text-foreground font-mono text-sm break-all">
-                    <a v-if="detailPayment.order_id" :href="orderLink(detailPayment.order_id)" target="_blank" rel="noopener" class="text-primary underline-offset-4 hover:underline">
-                      #{{ detailPayment.order_id }}
-                    </a>
+                    <div v-if="detailPayment.order_id" class="flex items-center gap-1.5">
+                      <a :href="orderLink(detailPayment.order_id)" target="_blank" rel="noopener" class="break-all text-primary underline-offset-4 hover:underline">
+                        {{ detailPayment.order_no }}
+                      </a>
+                      <button
+                        type="button"
+                        class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
+                        :title="t('admin.common.copy')"
+                        @click="handleCopyOrderNo(detailPayment.order_no)"
+                      >
+                        <Copy class="h-3 w-3" />
+                      </button>
+                    </div>
                     <span v-else-if="detailPayment.recharge_no">{{ detailPayment.recharge_no }}</span>
                     <span v-else>-</span>
                     <div v-if="detailPayment.recharge_no" class="mt-2 space-y-1 text-xs text-muted-foreground">
                       <div>
                         {{ t('admin.payments.rechargeUser') }}:
-                        <span v-if="detailPayment.recharge_user_id" class="font-mono">#{{ detailPayment.recharge_user_id }}</span>
+                        <a
+                          v-if="detailPayment.recharge_user_id"
+                          :href="userDetailLink(detailPayment.recharge_user_id)"
+                          target="_blank"
+                          rel="noopener"
+                          class="font-mono text-primary underline-offset-4 hover:underline"
+                        >
+                          #{{ detailPayment.recharge_user_id }}
+                        </a>
                         <span v-else>-</span>
                       </div>
                       <div v-if="detailPayment.recharge_status">
@@ -607,6 +614,7 @@ watch(
       </DialogScrollContent>
     </Dialog>
   </div>
+  </ComplianceGuardWrapper>
 </template>
 
 <style scoped>

@@ -9,11 +9,14 @@ import IdCell from '@/components/IdCell.vue'
 import { getFirstImageUrl } from '@/utils/image'
 import { formatMoney, getLocalizedText } from '@/utils/format'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { notifyError, notifySuccess } from '@/utils/notify'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import type { ListFetchOptions } from '@/composables/useListRefresh'
 import { confirmAction } from '@/utils/confirm'
 import ProductEditModal from './components/ProductEditModal.vue'
 import { buildAdminCategoryPath, createAdminCategoryMap, createAdminCategoryChildCountMap, flattenAdminCategories, isAdminProductCategorySelectable } from '@/utils/category'
@@ -22,7 +25,6 @@ const { t } = useI18n()
 const loading = ref(false)
 const searchQuery = ref('')
 const stockStatus = ref('all')
-const jumpPage = ref('')
 const route = useRoute()
 const router = useRouter()
 
@@ -198,8 +200,8 @@ const autoStockBadgeClass = (product: AdminProduct) => {
   return 'border-emerald-200 bg-emerald-50 text-emerald-700'
 }
 
-const fetchProducts = async () => {
-  loading.value = true
+const fetchProducts = async (options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   selectedIds.value = new Set()
   try {
     const res = await adminAPI.getProducts({
@@ -213,9 +215,9 @@ const fetchProducts = async () => {
       Object.assign(pagination, res.data.pagination)
     }
   } catch (err) {
-    products.value = []
+    if (!options.preserveRows) products.value = []
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
@@ -265,7 +267,7 @@ const resetFilters = () => {
   searchQuery.value = ''
   stockStatus.value = 'all'
   pagination.page = 1
-  fetchProducts()
+  fetchProducts({ preserveRows: true })
   nextTick(() => {
     const input = document.getElementById('admin-products-search') as HTMLInputElement | null
     input?.focus()
@@ -277,13 +279,13 @@ const changePage = (page: number) => {
   fetchProducts()
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.total_page || 1)
-  if (target === pagination.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.page_size) return
+  pagination.page_size = size
+  pagination.page = 1
+  fetchProducts()
 }
 
 const openCreateModal = () => {
@@ -476,7 +478,7 @@ watch(
         <TableHeader class="border-b border-border bg-muted/40 text-xs uppercase text-muted-foreground">
           <TableRow>
             <TableHead class="w-10 px-3 py-3">
-              <input type="checkbox" :checked="allSelected" :indeterminate="selectedIds.size > 0 && !allSelected" class="h-4 w-4 rounded border-border accent-primary cursor-pointer" @change="toggleSelectAll" />
+              <Checkbox :model-value="allSelected ? true : (selectedIds.size > 0 ? 'indeterminate' : false)" @update:model-value="toggleSelectAll" />
             </TableHead>
             <TableHead class="px-6 py-3">{{ t('admin.products.table.id') }}</TableHead>
             <TableHead class="px-6 py-3 min-w-[320px]">{{ t('admin.products.table.name') }}</TableHead>
@@ -498,7 +500,7 @@ watch(
           </TableRow>
           <TableRow v-for="product in products" :key="product.id" class="hover:bg-muted/30">
             <TableCell class="w-10 px-3 py-4">
-              <input type="checkbox" :checked="selectedIds.has(product.id)" class="h-4 w-4 rounded border-border accent-primary cursor-pointer" @click.stop="toggleSelect(product.id)" />
+              <Checkbox :model-value="selectedIds.has(product.id)" @update:model-value="() => toggleSelect(product.id)" />
             </TableCell>
             <TableCell class="px-6 py-4">
               <IdCell :value="product.id" />
@@ -630,45 +632,15 @@ watch(
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-col gap-3 border-t border-border px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-muted-foreground">
-            {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-          </span>
-        </div>
-        <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-full sm:w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Button variant="outline" size="sm" class="h-8 w-full sm:w-auto" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-8 w-full sm:w-auto"
-              :disabled="pagination.page >= pagination.total_page"
-              @click="changePage(pagination.page + 1)"
-            >
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
     </div>
 
     <ProductEditModal

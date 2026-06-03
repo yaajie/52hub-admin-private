@@ -1,18 +1,26 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { AdminPaymentChannel } from '@/api/types'
 import RichEditor from '@/components/RichEditor.vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { notifyError, notifySuccess } from '@/utils/notify'
+import { applySiteIcon } from '@/utils/favicon'
+import { getImageUrl } from '@/utils/image'
+import MediaPicker from '@/components/admin/MediaPicker.vue'
 import SettingsSMTPTab from './components/SettingsSMTPTab.vue'
 import SettingsCaptchaTab from './components/SettingsCaptchaTab.vue'
 import SettingsOrderEmailTemplateTab from './components/SettingsOrderEmailTemplateTab.vue'
 import SettingsNavigationTab from './components/SettingsNavigationTab.vue'
-import SettingsOrderRiskControlTab from './components/SettingsOrderRiskControlTab.vue'
+import SettingsHomeAnnouncementTab from './components/SettingsHomeAnnouncementTab.vue'
+import SettingsUpstreamSyncTab from './components/SettingsUpstreamSyncTab.vue'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -20,7 +28,9 @@ const smtpTabRef = ref<InstanceType<typeof SettingsSMTPTab>>()
 const captchaTabRef = ref<InstanceType<typeof SettingsCaptchaTab>>()
 const orderEmailTemplateTabRef = ref<InstanceType<typeof SettingsOrderEmailTemplateTab>>()
 const navigationTabRef = ref<InstanceType<typeof SettingsNavigationTab>>()
-const orderRiskControlTabRef = ref<InstanceType<typeof SettingsOrderRiskControlTab>>()
+const homeAnnouncementTabRef = ref<InstanceType<typeof SettingsHomeAnnouncementTab>>()
+const upstreamSyncTabRef = ref<InstanceType<typeof SettingsUpstreamSyncTab>>()
+const siteIconPickerRef = ref<InstanceType<typeof MediaPicker> | null>(null)
 const supportedLanguages = ['zh-CN', 'zh-TW', 'en-US'] as const
 type SupportedLanguage = (typeof supportedLanguages)[number]
 type SiteScriptPosition = 'head' | 'body_end'
@@ -38,6 +48,7 @@ const registrationForm = reactive({
   registration_enabled: true,
   email_verification_enabled: true,
 })
+const orderPaymentExpireMinutes = ref(15)
 type FooterLinkItem = {
   name: string
   url: string
@@ -61,14 +72,13 @@ const tabs = computed(() => [
   { label: t('admin.settings.tabs.navigation'), value: 'navigation' },
   { label: t('admin.settings.tabs.about'), value: 'about' },
   { label: t('admin.settings.tabs.legal'), value: 'legal' },
+  { label: t('admin.settings.tabs.homeAnnouncement'), value: 'home_announcement' },
   { label: t('admin.settings.tabs.smtp'), value: 'smtp' },
   { label: t('admin.settings.tabs.orderEmailTemplate'), value: 'order_email_template' },
   { label: t('admin.settings.tabs.captcha'), value: 'captcha' },
   { label: t('admin.settings.tabs.telegram'), value: 'telegram' },
   { label: t('admin.settings.tabs.dashboard'), value: 'dashboard' },
-  { label: t('admin.settings.tabs.wallet'), value: 'wallet' },
-  { label: t('admin.settings.tabs.callbackRoutes'), value: 'callback_routes' },
-  { label: t('admin.settings.tabs.orderRiskControl'), value: 'order_risk_control' },
+  { label: t('admin.settings.tabs.upstreamSync'), value: 'upstream_sync' },
 ])
 
 const fallbackCurrencyOptions = [
@@ -166,9 +176,11 @@ const form = reactive({
   brand: {
     site_name: '',
     site_url: '',
+    site_icon: '',
     site_description: createLocalizedField(),
   },
   currency: 'CNY',
+  order_max_refund_days: 30,
   contact: {
     telegram: '',
     whatsapp: '',
@@ -257,6 +269,10 @@ const telegramForm = reactive({
   mini_app_url: '',
   login_expire_seconds: 300,
   replay_ttl_seconds: 300,
+  client_secret: '',
+  has_client_secret: false,
+  oidc_redirect_uri: '',
+  mode: '' as string,
 })
 
 const createOrderEmailLocalizedTemplate = () => ({ subject: '', body: '' })
@@ -272,6 +288,8 @@ const orderEmailTemplateData = reactive({
     delivered: createOrderEmailSceneTemplate(),
     delivered_with_content: createOrderEmailSceneTemplate(),
     canceled: createOrderEmailSceneTemplate(),
+    refunded: createOrderEmailSceneTemplate(),
+    partially_refunded: createOrderEmailSceneTemplate(),
   },
   guest_tip: { 'zh-CN': '', 'zh-TW': '', 'en-US': '' } as Record<typeof supportedLanguages[number], string>,
 })
@@ -288,138 +306,6 @@ const dashboardForm = reactive({
     top_channels_limit: 5,
   },
 })
-
-const walletForm = reactive({
-  recharge_channel_ids: [] as number[],
-  wallet_only_payment: false,
-})
-const walletPaymentChannels = ref<AdminPaymentChannel[]>([])
-const walletSaving = ref(false)
-
-// --- 回调路由配置 ---
-const callbackRoutesForm = reactive({
-  payment_callback: '',
-  paypal_webhook: '',
-  stripe_webhook: '',
-  upstream_callback: '',
-})
-const callbackRoutesSaving = ref(false)
-const callbackRoutesLoaded = ref(false)
-
-const loadCallbackRoutes = async () => {
-  try {
-    const res = await adminAPI.getSettings({ key: 'callback_routes_config' })
-    const data = res.data?.data as Record<string, string> | null
-    if (data) {
-      callbackRoutesForm.payment_callback = data.payment_callback || ''
-      callbackRoutesForm.paypal_webhook = data.paypal_webhook || ''
-      callbackRoutesForm.stripe_webhook = data.stripe_webhook || ''
-      callbackRoutesForm.upstream_callback = data.upstream_callback || ''
-    }
-  } catch {
-    // 未配置时保持空值
-  }
-  callbackRoutesLoaded.value = true
-}
-
-const reservedRoutePrefixes = [
-  '/api/v1/public/', '/api/v1/admin/', '/api/v1/auth/',
-  '/api/v1/guest/', '/api/v1/channel/', '/api/v1/upstream/api/', '/api/v1/user/',
-]
-
-const saveCallbackRoutes = async () => {
-  // 验证：非空值必须以 /api/ 开头，且不能与已有路由冲突
-  const fields = [
-    { key: 'payment_callback', value: callbackRoutesForm.payment_callback },
-    { key: 'paypal_webhook', value: callbackRoutesForm.paypal_webhook },
-    { key: 'stripe_webhook', value: callbackRoutesForm.stripe_webhook },
-    { key: 'upstream_callback', value: callbackRoutesForm.upstream_callback },
-  ]
-  const nonEmptyPaths: string[] = []
-  for (const field of fields) {
-    const v = field.value.trim().replace(/\/+$/, '')
-    if (v && !v.startsWith('/api/')) {
-      notifyError(t('admin.settings.callbackRoutes.mustStartWithApi'))
-      return
-    }
-    if (v) {
-      const vSlash = v + '/'
-      if (reservedRoutePrefixes.some(p => vSlash.startsWith(p) || p.startsWith(vSlash))) {
-        notifyError(t('admin.settings.callbackRoutes.conflictWithSystem'))
-        return
-      }
-      if (nonEmptyPaths.includes(v)) {
-        notifyError(t('admin.settings.callbackRoutes.duplicatePath'))
-        return
-      }
-      nonEmptyPaths.push(v)
-    }
-  }
-
-  callbackRoutesSaving.value = true
-  try {
-    await adminAPI.updateSettings({
-      key: 'callback_routes_config',
-      value: {
-        payment_callback: callbackRoutesForm.payment_callback.trim(),
-        paypal_webhook: callbackRoutesForm.paypal_webhook.trim(),
-        stripe_webhook: callbackRoutesForm.stripe_webhook.trim(),
-        upstream_callback: callbackRoutesForm.upstream_callback.trim(),
-      },
-    } as any)
-    notifySuccess(t('admin.settings.saved'))
-  } catch (err: any) {
-    notifyError(err?.message || t('admin.settings.saveFailed'))
-  } finally {
-    callbackRoutesSaving.value = false
-  }
-}
-
-const toggleWalletRechargeChannel = (channelId: number) => {
-  const idx = walletForm.recharge_channel_ids.indexOf(channelId)
-  if (idx >= 0) {
-    walletForm.recharge_channel_ids.splice(idx, 1)
-  } else {
-    walletForm.recharge_channel_ids.push(channelId)
-  }
-}
-
-const loadWalletConfig = async () => {
-  try {
-    const res = await adminAPI.getSettings({ key: 'wallet_config' })
-    const data = res.data?.data
-    if (data && Array.isArray(data.recharge_channel_ids)) {
-      walletForm.recharge_channel_ids = data.recharge_channel_ids.filter((id: unknown) => typeof id === 'number' && id > 0)
-    } else {
-      walletForm.recharge_channel_ids = []
-    }
-    walletForm.wallet_only_payment = !!data?.wallet_only_payment
-  } catch {
-    walletForm.recharge_channel_ids = []
-    walletForm.wallet_only_payment = false
-  }
-}
-
-const loadWalletPaymentChannels = async () => {
-  try {
-    const res = await adminAPI.getPaymentChannels({ page: 1, page_size: 200 })
-    walletPaymentChannels.value = (res.data?.data ?? []).filter((ch: AdminPaymentChannel) => ch.is_active)
-  } catch {
-    walletPaymentChannels.value = []
-  }
-}
-
-const saveWalletConfig = async () => {
-  walletSaving.value = true
-  try {
-    await adminAPI.updateSettings({ key: 'wallet_config', value: { recharge_channel_ids: walletForm.recharge_channel_ids, wallet_only_payment: walletForm.wallet_only_payment } } as any)
-    notifySuccess(t('admin.settings.saved'))
-  } catch (err: any) {
-    notifyError(err?.message || t('admin.settings.saveFailed'))
-  } finally {
-    walletSaving.value = false
-  }
-}
 
 const getCurrentLangName = () => {
   return languages.value.find((item) => item.code === currentLang.value)?.name || t('admin.common.lang.zhCN')
@@ -450,8 +336,9 @@ const notifyErrorIfNeeded = (err: unknown, fallback: string) => {
 const fetchSettings = async () => {
   loading.value = true
   try {
-    const [siteRes, smtpRes, captchaRes, telegramRes, dashboardRes, registrationRes, orderEmailTmplRes] = await Promise.all([
+    const [siteRes, orderRes, smtpRes, captchaRes, telegramRes, dashboardRes, registrationRes, orderEmailTmplRes] = await Promise.all([
       adminAPI.getSettings({ key: 'site_config' }),
+      adminAPI.getSettings({ key: 'order_config' }),
       adminAPI.getSMTPSettings(),
       adminAPI.getCaptchaSettings(),
       adminAPI.getTelegramAuthSettings(),
@@ -466,6 +353,7 @@ const fetchSettings = async () => {
       if (brand) {
         form.brand.site_name = String(brand.site_name || '')
         form.brand.site_url = String(brand.site_url || '')
+        form.brand.site_icon = String(brand.site_icon || '')
         form.brand.site_description = normalizeLocalizedField(brand.site_description)
       }
       {
@@ -532,6 +420,15 @@ const fetchSettings = async () => {
       form.template_mode = rawTemplateMode === 'list' ? 'list' : 'card'
     }
 
+    if (orderRes.data && orderRes.data.data) {
+      const orderData = orderRes.data.data as Record<string, unknown>
+      form.order_max_refund_days = clampNumber(orderData.max_refund_days, 0, 3650, 30)
+      orderPaymentExpireMinutes.value = clampNumber(orderData.payment_expire_minutes, 1, 10080, 15)
+    } else {
+      form.order_max_refund_days = 30
+      orderPaymentExpireMinutes.value = 15
+    }
+
     if (smtpRes.data && smtpRes.data.data) {
       const smtp = smtpRes.data.data as Record<string, unknown>
       smtpData.enabled = !!smtp.enabled
@@ -589,6 +486,10 @@ const fetchSettings = async () => {
       telegramForm.mini_app_url = String(telegram.mini_app_url || '')
       telegramForm.login_expire_seconds = normalizeNumber(telegram.login_expire_seconds, 300)
       telegramForm.replay_ttl_seconds = normalizeNumber(telegram.replay_ttl_seconds, 300)
+      telegramForm.client_secret = ''
+      telegramForm.has_client_secret = !!telegram.has_client_secret
+      telegramForm.oidc_redirect_uri = String(telegram.oidc_redirect_uri || '')
+      telegramForm.mode = String(telegram.mode || '')
     }
 
     if (dashboardRes.data && dashboardRes.data.data) {
@@ -613,7 +514,7 @@ const fetchSettings = async () => {
       const tmplData = orderEmailTmplRes.data.data as Record<string, unknown>
       const templates = tmplData.templates as Record<string, unknown> | undefined
       if (templates) {
-        const sceneKeys = ['default', 'paid', 'delivered', 'delivered_with_content', 'canceled'] as const
+        const sceneKeys = ['default', 'paid', 'delivered', 'delivered_with_content', 'canceled', 'refunded', 'partially_refunded'] as const
         sceneKeys.forEach((key) => {
           const scene = templates[key] as Record<string, unknown> | undefined
           if (scene) {
@@ -655,10 +556,10 @@ const saveRegistrationSettings = async () => {
 const saveSiteSettings = async () => {
   const payload = {
     key: 'site_config',
-      value: {
-        brand: form.brand,
-        currency: String(form.currency || 'CNY').trim().toUpperCase(),
-        contact: form.contact,
+    value: {
+      brand: form.brand,
+      currency: String(form.currency || 'CNY').trim().toUpperCase(),
+      contact: form.contact,
       seo: form.seo,
       about: form.about,
       legal: form.legal,
@@ -668,6 +569,29 @@ const saveSiteSettings = async () => {
     },
   }
   await adminAPI.updateSettings(payload)
+  applySiteIcon(form.brand.site_icon)
+}
+
+const openSiteIconPicker = () => {
+  siteIconPickerRef.value?.openPicker()
+}
+
+const clearSiteIcon = () => {
+  form.brand.site_icon = ''
+}
+
+const saveOrderSettings = async () => {
+  const normalizedMaxRefundDays = clampNumber(form.order_max_refund_days, 0, 3650, 30)
+  const normalizedPaymentExpireMinutes = clampNumber(orderPaymentExpireMinutes.value, 1, 10080, 15)
+  form.order_max_refund_days = normalizedMaxRefundDays
+  orderPaymentExpireMinutes.value = normalizedPaymentExpireMinutes
+  await adminAPI.updateSettings({
+    key: 'order_config',
+    value: {
+      payment_expire_minutes: normalizedPaymentExpireMinutes,
+      max_refund_days: normalizedMaxRefundDays,
+    },
+  })
 }
 
 const addAboutServiceItem = () => {
@@ -714,15 +638,23 @@ const saveTelegramAuthSettings = async () => {
     mini_app_url: telegramForm.mini_app_url,
     login_expire_seconds: Number(telegramForm.login_expire_seconds),
     replay_ttl_seconds: Number(telegramForm.replay_ttl_seconds),
+    oidc_redirect_uri: telegramForm.oidc_redirect_uri.trim(),
   }
   if (telegramForm.bot_token.trim() !== '') {
     payload.bot_token = telegramForm.bot_token.trim()
+  }
+  if (telegramForm.client_secret.trim() !== '') {
+    payload.client_secret = telegramForm.client_secret.trim()
   }
 
   const res = await adminAPI.updateTelegramAuthSettings(payload)
   const data = res.data?.data as Record<string, unknown> | undefined
   telegramForm.bot_token = ''
   telegramForm.has_bot_token = !!data?.has_bot_token || telegramForm.has_bot_token
+  telegramForm.client_secret = ''
+  telegramForm.has_client_secret = !!data?.has_client_secret || telegramForm.has_client_secret
+  telegramForm.mode = String(data?.mode || telegramForm.mode)
+  telegramForm.oidc_redirect_uri = String(data?.oidc_redirect_uri ?? telegramForm.oidc_redirect_uri)
 }
 
 
@@ -771,8 +703,12 @@ const saveSettings = async () => {
     await navigationTabRef.value?.save()
     return
   }
-  if (currentTab.value === 'order_risk_control') {
-    await orderRiskControlTabRef.value?.save()
+  if (currentTab.value === 'home_announcement') {
+    await homeAnnouncementTabRef.value?.save()
+    return
+  }
+  if (currentTab.value === 'upstream_sync') {
+    await upstreamSyncTabRef.value?.save()
     return
   }
   loading.value = true
@@ -783,6 +719,7 @@ const saveSettings = async () => {
       await saveDashboardSettings()
     } else {
       await saveRegistrationSettings()
+      await saveOrderSettings()
       await saveSiteSettings()
     }
     notifySuccess(t('admin.settings.alerts.saveSuccess'))
@@ -795,16 +732,6 @@ const saveSettings = async () => {
 
 onMounted(() => {
   fetchSettings()
-})
-
-watch(currentTab, (newTab) => {
-  if (newTab === 'wallet' && walletPaymentChannels.value.length === 0) {
-    loadWalletPaymentChannels()
-    loadWalletConfig()
-  }
-  if (newTab === 'callback_routes' && !callbackRoutesLoaded.value) {
-    loadCallbackRoutes()
-  }
 })
 </script>
 
@@ -827,26 +754,19 @@ watch(currentTab, (newTab) => {
             {{ lang.name }}
           </button>
         </div>
-        <Button size="sm" class="w-full sm:w-auto" :disabled="loading || smtpTabRef?.submitting || smtpTabRef?.smtpTesting || captchaTabRef?.submitting || orderEmailTemplateTabRef?.submitting || navigationTabRef?.submitting" @click="saveSettings">
+        <Button size="sm" class="w-full sm:w-auto" :disabled="loading || smtpTabRef?.submitting || smtpTabRef?.smtpTesting || captchaTabRef?.submitting || orderEmailTemplateTabRef?.submitting || navigationTabRef?.submitting || homeAnnouncementTabRef?.submitting || upstreamSyncTabRef?.submitting" @click="saveSettings">
           <span v-if="loading" class="h-3 w-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary"></span>
           {{ loading ? t('admin.settings.actions.saving') : t('admin.settings.actions.save') }}
         </Button>
       </div>
     </div>
 
-    <div class="flex gap-6 overflow-x-auto border-b border-border pb-1">
-      <button
-        v-for="tab in tabs"
-        :key="tab.value"
-        class="relative top-[1px] shrink-0 whitespace-nowrap border-b-2 pb-3 text-sm font-medium transition-colors"
-        :class="currentTab === tab.value ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
-        @click="currentTab = tab.value"
-      >
-        {{ tab.label }}
-      </button>
-    </div>
+    <Tabs v-model="currentTab" class="flex flex-col gap-6">
+      <TabsList class="h-auto flex-wrap gap-1">
+        <TabsTrigger v-for="tab in tabs" :key="tab.value" :value="tab.value">{{ tab.label }}</TabsTrigger>
+      </TabsList>
 
-    <div v-show="currentTab === 'basic'" class="space-y-6">
+      <TabsContent value="basic" :forceMount="true" v-show="currentTab === 'basic'" class="space-y-6 mt-0">
       <div class="rounded-xl border border-border bg-card">
         <div class="border-b border-border bg-muted/40 px-6 py-4">
           <h2 class="text-lg font-semibold">{{ t('admin.settings.registration.title') }}</h2>
@@ -854,18 +774,49 @@ watch(currentTab, (newTab) => {
         </div>
         <div class="space-y-4 p-6">
           <div class="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:flex-row sm:items-center">
-            <input id="registration-enabled" v-model="registrationForm.registration_enabled" type="checkbox" class="h-4 w-4 accent-primary" />
+            <Switch id="registration-enabled" v-model="registrationForm.registration_enabled" />
             <div>
-              <label for="registration-enabled" class="text-sm font-medium">{{ t('admin.settings.registration.registrationEnabled') }}</label>
+              <Label for="registration-enabled" class="text-sm font-medium">{{ t('admin.settings.registration.registrationEnabled') }}</Label>
               <p class="text-xs text-muted-foreground">{{ t('admin.settings.registration.registrationEnabledDesc') }}</p>
             </div>
           </div>
           <div class="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:flex-row sm:items-center">
-            <input id="email-verification-enabled" v-model="registrationForm.email_verification_enabled" type="checkbox" class="h-4 w-4 accent-primary" />
+            <Switch id="email-verification-enabled" v-model="registrationForm.email_verification_enabled" />
             <div>
-              <label for="email-verification-enabled" class="text-sm font-medium">{{ t('admin.settings.registration.emailVerificationEnabled') }}</label>
+              <Label for="email-verification-enabled" class="text-sm font-medium">{{ t('admin.settings.registration.emailVerificationEnabled') }}</Label>
               <p class="text-xs text-muted-foreground">{{ t('admin.settings.registration.emailVerificationEnabledDesc') }}</p>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-border bg-card">
+        <div class="border-b border-border bg-muted/40 px-6 py-4">
+          <h2 class="text-lg font-semibold">{{ t('admin.settings.order.title') }}</h2>
+          <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.settings.order.subtitle') }}</p>
+        </div>
+        <div class="grid grid-cols-1 gap-6 p-6 md:grid-cols-2">
+          <div class="space-y-2">
+            <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.order.paymentExpireMinutes') }}</label>
+            <Input
+              v-model.number="orderPaymentExpireMinutes"
+              type="number"
+              min="1"
+              max="10080"
+              :placeholder="t('admin.settings.order.paymentExpireMinutesPlaceholder')"
+            />
+            <p class="text-xs text-muted-foreground">{{ t('admin.settings.order.paymentExpireMinutesTip') }}</p>
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.order.maxRefundDays') }}</label>
+            <Input
+              v-model.number="form.order_max_refund_days"
+              type="number"
+              min="0"
+              max="3650"
+              :placeholder="t('admin.settings.order.maxRefundDaysPlaceholder')"
+            />
+            <p class="text-xs text-muted-foreground">{{ t('admin.settings.order.maxRefundDaysTip') }}</p>
           </div>
         </div>
       </div>
@@ -882,16 +833,41 @@ watch(currentTab, (newTab) => {
           </div>
           <div class="space-y-2">
             <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.brand.currency') }}</label>
-            <select v-model="form.currency" class="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
-              <option v-for="item in currencyOptions" :key="item" :value="item">
-                {{ item }}
-              </option>
-            </select>
+            <Select v-model="form.currency">
+              <SelectTrigger class="h-10 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="item in currencyOptions" :key="item" :value="item">{{ item }}</SelectItem>
+              </SelectContent>
+            </Select>
             <p class="text-xs text-muted-foreground">{{ t('admin.settings.brand.currencyTip') }}</p>
           </div>
           <div class="space-y-2">
             <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.brand.siteUrl') }}</label>
             <Input v-model="form.brand.site_url" :placeholder="t('admin.settings.brand.siteUrlPlaceholder')" />
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.brand.siteIcon') }}</label>
+            <div class="flex items-center gap-3">
+              <button
+                type="button"
+                class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted/20 transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :title="t('admin.settings.brand.siteIconTip')"
+                @click="openSiteIconPicker"
+              >
+                <img v-if="form.brand.site_icon" :src="getImageUrl(form.brand.site_icon)" class="h-full w-full object-contain" alt="" />
+                <span v-else class="text-[10px] font-semibold text-muted-foreground">ICO</span>
+              </button>
+              <Button type="button" variant="outline" size="sm" @click="openSiteIconPicker">
+                {{ t('admin.settings.brand.siteIconSelect') }}
+              </Button>
+              <Button v-if="form.brand.site_icon" type="button" variant="ghost" size="sm" @click="clearSiteIcon">
+                {{ t('admin.common.delete') }}
+              </Button>
+            </div>
+            <p class="text-xs text-muted-foreground">{{ t('admin.settings.brand.siteIconTip') }}</p>
+            <MediaPicker ref="siteIconPickerRef" v-model="form.brand.site_icon" scene="common" dialog-only />
           </div>
           <div class="space-y-2 md:col-span-2">
             <div class="flex items-center justify-between">
@@ -1008,17 +984,22 @@ watch(currentTab, (newTab) => {
 
               <div class="space-y-2">
                 <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.scripts.position') }}</label>
-                <select v-model="script.position" class="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
-                  <option value="head">{{ t('admin.settings.scripts.positionHead') }}</option>
-                  <option value="body_end">{{ t('admin.settings.scripts.positionBodyEnd') }}</option>
-                </select>
+                <Select v-model="script.position">
+                  <SelectTrigger class="h-10 w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="head">{{ t('admin.settings.scripts.positionHead') }}</SelectItem>
+                    <SelectItem value="body_end">{{ t('admin.settings.scripts.positionBodyEnd') }}</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
-            <label class="flex items-center gap-2 text-sm text-muted-foreground">
-              <input v-model="script.enabled" type="checkbox" class="h-4 w-4 accent-primary" />
+            <Label class="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+              <Switch v-model="script.enabled" />
               {{ t('admin.settings.scripts.enabled') }}
-            </label>
+            </Label>
 
             <div class="space-y-2">
               <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.scripts.code') }}</label>
@@ -1027,10 +1008,10 @@ watch(currentTab, (newTab) => {
           </div>
         </div>
       </div>
-    </div>
+      </TabsContent>
 
-    <!-- Template Mode Tab -->
-    <div v-show="currentTab === 'template'" class="space-y-6">
+      <!-- Template Mode Tab -->
+      <TabsContent value="template" :forceMount="true" v-show="currentTab === 'template'" class="space-y-6 mt-0">
       <div class="rounded-xl border border-border bg-card">
         <div class="flex flex-col gap-3 border-b border-border bg-muted/40 px-6 py-4">
           <div>
@@ -1039,15 +1020,15 @@ watch(currentTab, (newTab) => {
           </div>
         </div>
         <div class="px-6 py-6 space-y-6">
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <RadioGroup v-model="form.template_mode" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <!-- Card Mode -->
-            <label
+            <Label
               class="relative flex cursor-pointer flex-col items-center gap-3 rounded-xl border-2 p-6 transition-all"
               :class="form.template_mode === 'card'
                 ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
                 : 'border-border hover:border-muted-foreground/30'"
             >
-              <input type="radio" v-model="form.template_mode" value="card" class="sr-only" />
+              <RadioGroupItem value="card" class="sr-only" />
               <div class="flex h-16 w-16 items-center justify-center rounded-xl" :class="form.template_mode === 'card' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'">
                 <svg class="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
                   <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -1065,16 +1046,16 @@ watch(currentTab, (newTab) => {
                   <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                 </svg>
               </div>
-            </label>
+            </Label>
 
             <!-- List Mode -->
-            <label
+            <Label
               class="relative flex cursor-pointer flex-col items-center gap-3 rounded-xl border-2 p-6 transition-all"
               :class="form.template_mode === 'list'
                 ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
                 : 'border-border hover:border-muted-foreground/30'"
             >
-              <input type="radio" v-model="form.template_mode" value="list" class="sr-only" />
+              <RadioGroupItem value="list" class="sr-only" />
               <div class="flex h-16 w-16 items-center justify-center rounded-xl" :class="form.template_mode === 'list' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'">
                 <svg class="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
                   <path stroke-linecap="round" d="M3 6h18M3 12h18M3 18h18" />
@@ -1092,13 +1073,13 @@ watch(currentTab, (newTab) => {
                   <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                 </svg>
               </div>
-            </label>
-          </div>
+            </Label>
+          </RadioGroup>
         </div>
       </div>
-    </div>
+      </TabsContent>
 
-    <div v-show="currentTab === 'about'" class="space-y-6">
+      <TabsContent value="about" :forceMount="true" v-show="currentTab === 'about'" class="space-y-6 mt-0">
       <div class="rounded-xl border border-border bg-card">
         <div class="flex flex-col gap-3 border-b border-border bg-muted/40 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -1182,9 +1163,9 @@ watch(currentTab, (newTab) => {
           </div>
         </div>
       </div>
-    </div>
+      </TabsContent>
 
-    <div v-show="currentTab === 'legal'" class="space-y-6">
+      <TabsContent value="legal" :forceMount="true" v-show="currentTab === 'legal'" class="space-y-6 mt-0">
       <div class="rounded-xl border border-border bg-card">
         <div class="flex flex-col gap-3 border-b border-border bg-muted/40 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -1210,26 +1191,29 @@ watch(currentTab, (newTab) => {
           <RichEditor :key="`privacy-${currentLang}`" v-model="form.legal.privacy[currentLang]" :placeholder="t('admin.settings.legal.privacyPlaceholder')" />
         </div>
       </div>
-    </div>
+      </TabsContent>
 
-    <div v-show="currentTab === 'smtp'">
-      <SettingsSMTPTab ref="smtpTabRef" :data="smtpData" @saved="fetchSettings" />
-    </div>
+      <TabsContent value="home_announcement" :forceMount="true" v-show="currentTab === 'home_announcement'" class="mt-0">
+        <SettingsHomeAnnouncementTab ref="homeAnnouncementTabRef" :current-lang="currentLang" @saved="fetchSettings" />
+      </TabsContent>
 
-    <div v-show="currentTab === 'order_email_template'">
-      <SettingsOrderEmailTemplateTab ref="orderEmailTemplateTabRef" :data="orderEmailTemplateData" :current-lang="currentLang" @saved="fetchSettings" />
-    </div>
+      <TabsContent value="smtp" :forceMount="true" v-show="currentTab === 'smtp'" class="mt-0">
+        <SettingsSMTPTab ref="smtpTabRef" :data="smtpData" @saved="fetchSettings" />
+      </TabsContent>
 
-    <div v-show="currentTab === 'captcha'">
-      <SettingsCaptchaTab ref="captchaTabRef" :data="captchaData" @saved="fetchSettings" />
-    </div>
+      <TabsContent value="order_email_template" :forceMount="true" v-show="currentTab === 'order_email_template'" class="mt-0">
+        <SettingsOrderEmailTemplateTab ref="orderEmailTemplateTabRef" :data="orderEmailTemplateData" :current-lang="currentLang" @saved="fetchSettings" />
+      </TabsContent>
 
-    <div v-show="currentTab === 'navigation'">
-      <SettingsNavigationTab ref="navigationTabRef" :current-lang="currentLang" @saved="fetchSettings" />
-    </div>
+      <TabsContent value="captcha" :forceMount="true" v-show="currentTab === 'captcha'" class="mt-0">
+        <SettingsCaptchaTab ref="captchaTabRef" :data="captchaData" @saved="fetchSettings" />
+      </TabsContent>
 
+      <TabsContent value="navigation" :forceMount="true" v-show="currentTab === 'navigation'" class="mt-0">
+        <SettingsNavigationTab ref="navigationTabRef" :current-lang="currentLang" @saved="fetchSettings" />
+      </TabsContent>
 
-    <div v-show="currentTab === 'telegram'" class="space-y-6">
+      <TabsContent value="telegram" :forceMount="true" v-show="currentTab === 'telegram'" class="space-y-6 mt-0">
       <div class="rounded-xl border border-border bg-card">
         <div class="border-b border-border bg-muted/40 px-6 py-4">
           <h2 class="text-lg font-semibold">{{ t('admin.settings.telegram.title') }}</h2>
@@ -1238,8 +1222,8 @@ watch(currentTab, (newTab) => {
 
         <div class="space-y-6 p-6">
           <div class="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:flex-row sm:items-center">
-            <input id="telegram-auth-enabled" v-model="telegramForm.enabled" type="checkbox" class="h-4 w-4 accent-primary" />
-            <label for="telegram-auth-enabled" class="text-sm font-medium">{{ t('admin.settings.telegram.enabled') }}</label>
+            <Switch id="telegram-auth-enabled" v-model="telegramForm.enabled" />
+            <Label for="telegram-auth-enabled" class="text-sm font-medium">{{ t('admin.settings.telegram.enabled') }}</Label>
           </div>
 
           <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
@@ -1252,6 +1236,26 @@ watch(currentTab, (newTab) => {
               <Input v-model="telegramForm.bot_token" type="password" :placeholder="t('admin.settings.telegram.botTokenPlaceholder')" />
               <p class="text-xs text-muted-foreground">
                 {{ telegramForm.has_bot_token ? t('admin.settings.telegram.botTokenHintKeep') : t('admin.settings.telegram.botTokenHintEmpty') }}
+              </p>
+            </div>
+            <div class="space-y-2 md:col-span-2">
+              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.telegram.modeLabel') }}</label>
+              <p class="text-sm font-medium">
+                {{ telegramForm.mode === 'oidc' ? t('admin.settings.telegram.modeOidc') : (telegramForm.mode === 'widget' ? t('admin.settings.telegram.modeWidget') : t('admin.settings.telegram.modeDisabled')) }}
+              </p>
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.telegram.clientSecret') }}</label>
+              <Input v-model="telegramForm.client_secret" type="password" :placeholder="t('admin.settings.telegram.clientSecretPlaceholder')" />
+              <p class="text-xs text-muted-foreground">
+                {{ telegramForm.has_client_secret ? t('admin.settings.telegram.clientSecretHintKeep') : t('admin.settings.telegram.clientSecretHintEmpty') }}
+              </p>
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.telegram.oidcRedirectURI') }}</label>
+              <Input v-model="telegramForm.oidc_redirect_uri" :placeholder="t('admin.settings.telegram.oidcRedirectURIPlaceholder')" />
+              <p class="text-xs text-muted-foreground">
+                {{ t('admin.settings.telegram.oidcRedirectURIHint') }}
               </p>
             </div>
             <div class="space-y-2 md:col-span-2">
@@ -1272,9 +1276,13 @@ watch(currentTab, (newTab) => {
           </div>
         </div>
       </div>
-    </div>
+      </TabsContent>
 
-    <div v-show="currentTab === 'dashboard'" class="space-y-6">
+      <TabsContent value="upstream_sync" :forceMount="true" v-show="currentTab === 'upstream_sync'" class="mt-0">
+        <SettingsUpstreamSyncTab ref="upstreamSyncTabRef" />
+      </TabsContent>
+
+      <TabsContent value="dashboard" :forceMount="true" v-show="currentTab === 'dashboard'" class="space-y-6 mt-0">
       <div class="rounded-xl border border-border bg-card">
         <div class="border-b border-border bg-muted/40 px-6 py-4">
           <h2 class="text-lg font-semibold">{{ t('admin.settings.dashboard.title') }}</h2>
@@ -1329,90 +1337,8 @@ watch(currentTab, (newTab) => {
           </div>
         </div>
       </div>
-    </div>
+      </TabsContent>
 
-    <div v-show="currentTab === 'wallet'" class="space-y-6">
-      <div class="rounded-xl border border-border bg-card">
-        <div class="border-b border-border bg-muted/40 px-6 py-4">
-          <h2 class="text-lg font-semibold">{{ t('admin.settings.wallet.title') }}</h2>
-          <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.settings.wallet.subtitle') }}</p>
-        </div>
-        <div class="space-y-4 p-6">
-          <div class="flex items-center justify-between">
-            <div>
-              <label for="wallet-only-payment" class="text-sm font-medium">{{ t('admin.settings.wallet.walletOnlyPayment') }}</label>
-              <p class="text-xs text-muted-foreground mt-0.5">{{ t('admin.settings.wallet.walletOnlyPaymentTip') }}</p>
-            </div>
-            <input id="wallet-only-payment" v-model="walletForm.wallet_only_payment" type="checkbox" class="h-4 w-4 accent-primary" />
-          </div>
-          <div class="border-t border-border pt-4">
-            <label class="block text-xs font-medium text-muted-foreground mb-2">{{ t('admin.settings.wallet.rechargeChannels') }}</label>
-            <div v-if="walletPaymentChannels.length > 0" class="flex flex-wrap gap-2">
-              <label v-for="ch in walletPaymentChannels" :key="ch.id" class="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs cursor-pointer select-none" :class="walletForm.recharge_channel_ids.includes(ch.id) ? 'bg-primary/10 border-primary text-primary' : 'text-muted-foreground hover:border-primary/40'">
-                <input type="checkbox" :checked="walletForm.recharge_channel_ids.includes(ch.id)" class="h-3.5 w-3.5 accent-primary" @change="toggleWalletRechargeChannel(ch.id)" />
-                {{ ch.name }}
-              </label>
-            </div>
-            <p v-else class="text-xs text-muted-foreground">{{ t('admin.settings.wallet.noChannels') }}</p>
-            <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.settings.wallet.rechargeChannelsTip') }}</p>
-          </div>
-          <div class="flex justify-end border-t border-border pt-4">
-            <Button :disabled="walletSaving" @click="saveWalletConfig">
-              {{ walletSaving ? t('admin.settings.actions.saving') : t('admin.settings.actions.save') }}
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 回调路由配置 -->
-    <!-- 订单风控 -->
-    <div v-show="currentTab === 'order_risk_control'">
-      <SettingsOrderRiskControlTab ref="orderRiskControlTabRef" />
-    </div>
-
-    <div v-show="currentTab === 'callback_routes'" class="space-y-6">
-      <div class="rounded-xl border border-border bg-card">
-        <div class="border-b border-border bg-muted/40 px-6 py-4">
-          <h2 class="text-lg font-semibold">{{ t('admin.settings.callbackRoutes.title') }}</h2>
-          <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.settings.callbackRoutes.subtitle') }}</p>
-        </div>
-        <div class="space-y-6 p-6">
-          <div class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-            <p class="text-xs text-amber-600 dark:text-amber-400">{{ t('admin.settings.callbackRoutes.warning') }}</p>
-          </div>
-
-          <div class="grid grid-cols-1 gap-6">
-            <div class="space-y-2">
-              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.callbackRoutes.paymentCallback') }}</label>
-              <input v-model="callbackRoutesForm.payment_callback" type="text" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" :placeholder="t('admin.settings.callbackRoutes.paymentCallbackPlaceholder')" />
-              <p class="text-xs text-muted-foreground">{{ t('admin.settings.callbackRoutes.defaultPath') }}: /api/v1/payments/callback</p>
-            </div>
-            <div class="space-y-2">
-              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.callbackRoutes.paypalWebhook') }}</label>
-              <input v-model="callbackRoutesForm.paypal_webhook" type="text" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" :placeholder="t('admin.settings.callbackRoutes.webhookPlaceholder')" />
-              <p class="text-xs text-muted-foreground">{{ t('admin.settings.callbackRoutes.defaultPath') }}: /api/v1/payments/webhook/paypal</p>
-            </div>
-            <div class="space-y-2">
-              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.callbackRoutes.stripeWebhook') }}</label>
-              <input v-model="callbackRoutesForm.stripe_webhook" type="text" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" :placeholder="t('admin.settings.callbackRoutes.webhookPlaceholder')" />
-              <p class="text-xs text-muted-foreground">{{ t('admin.settings.callbackRoutes.defaultPath') }}: /api/v1/payments/webhook/stripe</p>
-            </div>
-            <div class="space-y-2">
-              <label class="text-xs font-medium text-muted-foreground">{{ t('admin.settings.callbackRoutes.upstreamCallback') }}</label>
-              <input v-model="callbackRoutesForm.upstream_callback" type="text" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" :placeholder="t('admin.settings.callbackRoutes.callbackPlaceholder')" />
-              <p class="text-xs text-muted-foreground">{{ t('admin.settings.callbackRoutes.defaultPath') }}: /api/v1/upstream/callback</p>
-            </div>
-          </div>
-
-          <div class="flex justify-end border-t border-border pt-4">
-            <Button :disabled="callbackRoutesSaving" @click="saveCallbackRoutes">
-              {{ callbackRoutesSaving ? t('admin.settings.actions.saving') : t('admin.settings.actions.save') }}
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-
+    </Tabs>
   </div>
 </template>

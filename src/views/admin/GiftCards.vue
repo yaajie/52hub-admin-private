@@ -11,10 +11,14 @@ import {
 import type { AdminGiftCard, AdminGiftCardBatch } from '@/api/types'
 import IdCell from '@/components/IdCell.vue'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { toggleArrayMember } from '@/lib/utils'
 import { Dialog, DialogHeader, DialogScrollContent, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import TableSkeleton from '@/components/TableSkeleton.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { useListRefresh, type ListFetchOptions } from '@/composables/useListRefresh'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { formatDate } from '@/utils/format'
 import { confirmAction } from '@/utils/confirm'
@@ -34,6 +38,7 @@ type GiftCardWithRelations = AdminGiftCard & {
 const { t } = useI18n()
 
 const loading = ref(true)
+const { refreshing, refreshList } = useListRefresh()
 const cards = ref<GiftCardWithRelations[]>([])
 const pagination = ref({
   page: 1,
@@ -41,8 +46,6 @@ const pagination = ref({
   total: 0,
   total_page: 1,
 })
-const jumpPage = ref('')
-
 const filters = reactive({
   code: '',
   status: '__all__',
@@ -179,19 +182,14 @@ const toggleSelectAllCards = () => {
     .filter((id) => Number.isFinite(id) && id > 0)
 }
 
-const onRowSelectChange = (rawID: number | string, event: Event) => {
+const onRowSelectChange = (rawID: number | string, v: boolean | 'indeterminate') => {
   const id = Number(rawID)
   if (!Number.isFinite(id) || id <= 0) return
-  const checked = (event.target as HTMLInputElement | null)?.checked ?? false
-  if (checked) {
-    selectedCardIDs.value = Array.from(new Set([...selectedCardIDs.value, Math.floor(id)]))
-    return
-  }
-  selectedCardIDs.value = selectedCardIDs.value.filter((item) => item !== Math.floor(id))
+  toggleArrayMember(selectedCardIDs, Math.floor(id), v)
 }
 
-const fetchGiftCards = async (page = 1) => {
-  loading.value = true
+const fetchGiftCards = async (page = 1, options: ListFetchOptions = {}) => {
+  if (!options.preserveRows) loading.value = true
   clearBatchMessages()
   try {
     const params: Record<string, unknown> = {
@@ -211,19 +209,21 @@ const fetchGiftCards = async (page = 1) => {
     pagination.value = response.data.pagination || pagination.value
     selectedCardIDs.value = []
   } catch {
-    cards.value = []
-    selectedCardIDs.value = []
+    if (!options.preserveRows) {
+      cards.value = []
+      selectedCardIDs.value = []
+    }
   } finally {
-    loading.value = false
+    if (!options.preserveRows) loading.value = false
   }
 }
 
 const handleSearch = () => {
-  fetchGiftCards(1)
+  fetchGiftCards(1, { preserveRows: true })
 }
 
 const refresh = () => {
-  fetchGiftCards(pagination.value.page)
+  refreshList(() => fetchGiftCards(pagination.value.page, { preserveRows: true }))
 }
 
 const changePage = (page: number) => {
@@ -231,13 +231,12 @@ const changePage = (page: number) => {
   fetchGiftCards(page)
 }
 
-const jumpToPage = () => {
-  if (!jumpPage.value) return
-  const raw = Number(jumpPage.value)
-  if (Number.isNaN(raw)) return
-  const target = Math.min(Math.max(Math.floor(raw), 1), pagination.value.total_page)
-  if (target === pagination.value.page) return
-  changePage(target)
+const pageSizeOptions = [10, 20, 50, 100]
+
+const changePageSize = (size: number) => {
+  if (size === pagination.value.page_size) return
+  pagination.value.page_size = size
+  fetchGiftCards(1)
 }
 
 const applyBatchStatus = async () => {
@@ -530,7 +529,7 @@ onMounted(() => {
         <TableHeader class="border-b border-border bg-muted/40 text-xs uppercase text-muted-foreground">
           <TableRow>
             <TableHead class="min-w-[56px] px-4 py-3">
-              <input type="checkbox" class="h-4 w-4 accent-primary" :checked="allCurrentPageSelected" @change="toggleSelectAllCards" />
+              <Checkbox :model-value="allCurrentPageSelected" @update:model-value="toggleSelectAllCards" />
             </TableHead>
             <TableHead class="min-w-[80px] px-4 py-3">{{ t('admin.giftCards.table.id') }}</TableHead>
             <TableHead class="min-w-[80px] px-4 py-3">{{ t('admin.giftCards.table.name') }}</TableHead>
@@ -556,11 +555,9 @@ onMounted(() => {
           </TableRow>
           <TableRow v-for="card in cards" :key="card.id" class="hover:bg-muted/30">
             <TableCell class="min-w-[56px] px-4 py-3">
-              <input
-                type="checkbox"
-                class="h-4 w-4 accent-primary"
-                :checked="selectedCardIDs.includes(Number(card.id))"
-                @change="onRowSelectChange(card.id, $event)"
+              <Checkbox
+                :model-value="selectedCardIDs.includes(Number(card.id))"
+                @update:model-value="(v) => onRowSelectChange(card.id, v)"
               />
             </TableCell>
             <TableCell class="min-w-[80px] px-4 py-3"><IdCell :value="card.id" /></TableCell>
@@ -594,38 +591,19 @@ onMounted(() => {
         </TableBody>
       </Table>
 
-      <div
-        v-if="pagination.total_page > 1"
-        class="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-4"
+      <ListPagination
+        :page="pagination.page"
+        :total-page="pagination.total_page"
+        :total="pagination.total"
+        :page-size="pagination.page_size"
+        :page-size-options="pageSizeOptions"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
       >
-        <span class="text-xs text-muted-foreground">
-          {{ t('admin.common.pageInfo', { total: pagination.total, page: pagination.page, totalPage: pagination.total_page }) }}
-        </span>
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="flex items-center gap-2">
-            <Input
-              v-model="jumpPage"
-              type="number"
-              min="1"
-              :max="pagination.total_page"
-              class="h-8 w-20"
-              :placeholder="t('admin.common.jumpPlaceholder')"
-            />
-            <Button variant="outline" size="sm" class="h-8" @click="jumpToPage">
-              {{ t('admin.common.jumpTo') }}
-            </Button>
-          </div>
-          <div class="flex items-center gap-2">
-            <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-              {{ t('admin.common.prevPage') }}
-            </Button>
-            <Button variant="outline" size="sm" class="h-8" :disabled="pagination.page >= pagination.total_page" @click="changePage(pagination.page + 1)">
-              {{ t('admin.common.nextPage') }}
-            </Button>
-          </div>
-          <Button size="sm" variant="outline" class="h-8" @click="refresh">{{ t('admin.common.refresh') }}</Button>
-        </div>
-      </div>
+        <template #actions>
+          <Button size="sm" variant="outline" class="h-8" :disabled="refreshing" @click="refresh">{{ t('admin.common.refresh') }}</Button>
+        </template>
+      </ListPagination>
     </div>
 
     <Dialog v-model:open="showGenerateModal" @update:open="(value) => { if (!value) closeGenerateModal() }">
