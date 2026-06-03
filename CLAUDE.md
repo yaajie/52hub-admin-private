@@ -31,10 +31,21 @@ git status --short
 ## 当前仓库快照（每次 commit 后必须更新此块）
 
 - 分支：`52hub/v1.0.2-admin-hardening`
-- **最新 commit：`efa3dbc 52hub: require shared handoff docs updates`**
+- **最新代码 commit：`a95c824 52hub: upgrade admin backend console to v1.2.1`**
+- 上游基线：`v1.2.1`
 - tag：`v1.0.2-52hub-admin-001`
 - private remote：`https://github.com/yaajie/52hub-admin-private`（已同步）
 - working tree：clean
+
+最近一次生产上线：
+
+- 时间：2026-06-04
+- 范围：admin 静态文件 + API 容器
+- admin commit：`a95c824 52hub: upgrade admin backend console to v1.2.1`
+- API commit：`e058f7a 52hub: upgrade api to v1.2.1 preserving sort order`
+- 生产备份：`/opt/dujiao-next/backups/pre-backend-upgrade-20260604-061527`
+- admin 部署路径：`/opt/dujiao-next/web/admin/`
+- API 镜像：compose tag `dujiaonext/api:v1.0.2-52hub-sortorder` 已指向 v1.2.1 构建镜像 id `sha256:a457c1b96766440240ad78ab4999739ea808e31d1afc06605b7da042bd5c75e3`
 
 ---
 
