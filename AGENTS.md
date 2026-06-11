@@ -31,11 +31,11 @@ git status --short
 ## 当前仓库快照（每次 commit 后必须更新此块）
 
 - 分支：`52hub/v1.0.2-admin-hardening`
-- **最新代码 commit：`a95c824 52hub: upgrade admin backend console to v1.2.1`**
+- **最新业务代码 commit：`a95c824 52hub: upgrade admin backend console to v1.2.1`**（最新交接文档 commit 以 `git log -1` 为准）
 - 上游基线：`v1.2.1`
 - tag：`v1.0.2-52hub-admin-001`
 - private remote：`https://github.com/yaajie/52hub-admin-private`（已同步）
-- working tree：clean
+- working tree：以 `git status --short` 为准；文档交接更新后应保持 clean 并 push 到 private
 
 最近一次生产上线：
 
@@ -46,6 +46,15 @@ git status --short
 - 生产备份：`/opt/dujiao-next/backups/pre-backend-upgrade-20260604-061527`
 - admin 部署路径：`/opt/dujiao-next/web/admin/`
 - API 镜像：compose tag `dujiaonext/api:v1.0.2-52hub-sortorder` 已指向 v1.2.1 构建镜像 id `sha256:a457c1b96766440240ad78ab4999739ea808e31d1afc06605b7da042bd5c75e3`
+
+## 2026-06-12 生产迁移状态
+
+- 当前生产后台入口：`https://ht.aikaitong.com`
+- 当前主站 API：`https://aikaitong.com/api`
+- 旧主域：`https://52hub.org` / `https://www.52hub.org` 301 到 `https://aikaitong.com/`
+- 中转业务：`ai.52hub.org` / `relay.52hub.org` 保留不迁移。
+- 生产后台 favicon/logo/标题/侧边栏已热修为 AI开通；备份见 `/opt/dujiao-next/backups/admin-brand-assets-20260611-235000/`、`/opt/dujiao-next/backups/admin-brand-text-20260611-235236/`、`/opt/dujiao-next/backups/brand-static-cleanup-20260612-005927/`。
+- 注意：本仓库源码若仍有旧品牌静态文案，后续重建 admin 前必须先把生产热修回灌源码，再构建部署，避免覆盖生产品牌。
 
 ---
 
