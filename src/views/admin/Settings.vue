@@ -212,6 +212,7 @@ const form = reactive({
   scripts: [] as SiteScriptItem[],
   footer_links: [] as FooterLinkItem[],
   template_mode: 'card' as 'card' | 'list',
+  after_sales_hidden_text: '',
 })
 
 const smtpData = reactive({
@@ -410,6 +411,9 @@ const fetchSettings = async () => {
         })
       }
 
+      const afterSalesHidden = data.after_sales_hidden
+      form.after_sales_hidden_text = Array.isArray(afterSalesHidden) ? afterSalesHidden.join('\n') : ''
+
       const scripts = normalizeSiteScripts(data.scripts)
       form.scripts.splice(0, form.scripts.length, ...scripts)
 
@@ -566,6 +570,7 @@ const saveSiteSettings = async () => {
       scripts: form.scripts,
       footer_links: form.footer_links,
       template_mode: form.template_mode,
+      after_sales_hidden: form.after_sales_hidden_text.split('\n').map((s) => s.trim()).filter(Boolean),
     },
   }
   await adminAPI.updateSettings(payload)
@@ -1075,6 +1080,19 @@ onMounted(() => {
               </div>
             </Label>
           </RadioGroup>
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-border bg-card">
+        <div class="flex flex-col gap-3 border-b border-border bg-muted/40 px-6 py-4">
+          <div>
+            <h2 class="text-lg font-semibold">售后保障组件显示控制</h2>
+            <p class="mt-1 text-xs text-muted-foreground">默认所有商品详情页都显示「售后保障与边界」。在下方填入商品 slug（每行一个），可让对应商品<strong>不显示</strong>该组件。</p>
+          </div>
+        </div>
+        <div class="px-6 py-6">
+          <Textarea v-model="form.after_sales_hidden_text" :rows="4" placeholder="每行一个商品 slug，例如：&#10;chatgpt-plus&#10;claude-pro" class="font-mono text-sm" />
+          <p class="mt-2 text-xs text-muted-foreground">slug 即商品链接 /products/ 后面那段；留空表示全部显示。修改后点页面底部「保存」生效。</p>
         </div>
       </div>
       </TabsContent>
