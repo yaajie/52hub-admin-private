@@ -17,6 +17,7 @@ import { getImageUrl } from '@/utils/image'
 import { processHtmlForDisplay, processHtmlForStorage } from '@/utils/content'
 import { useI18n } from 'vue-i18n'
 import TiptapImage from './TiptapImage.vue'
+import { marked } from 'marked'
 
 const props = defineProps<{
   modelValue: string
@@ -164,6 +165,25 @@ const toggleSourceMode = () => {
 const handleSourceInput = (event: Event) => {
   const target = event.target as HTMLTextAreaElement
   emit('update:modelValue', target.value)
+}
+
+// 导入 Markdown：粘贴 MD 原文 → marked 转 HTML → 插入到光标处（保留所见即所得）
+const showMarkdownModal = ref(false)
+const markdownInput = ref('')
+
+const openMarkdownImport = () => {
+  markdownInput.value = ''
+  showMarkdownModal.value = true
+}
+
+const importMarkdown = () => {
+  const md = markdownInput.value.trim()
+  if (md && editor.value) {
+    const html = marked.parse(md) as string
+    editor.value.chain().focus().insertContent(html).run()
+  }
+  showMarkdownModal.value = false
+  markdownInput.value = ''
 }
 
 const addLink = () => {
@@ -367,6 +387,12 @@ onBeforeUnmount(() => {
 
       <div class="toolbar-divider"></div>
 
+      <button type="button" class="toolbar-btn" title="导入 Markdown（粘贴 MD 原文，自动排版）" @click="openMarkdownImport">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0 0l-4-4m4 4l4-4" />
+        </svg>
+      </button>
+
       <button type="button" class="toolbar-btn code-mode-btn" :title="t('admin.richEditor.sourceMode')" :class="{ 'is-active': isSourceMode }" @click="toggleSourceMode">
         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
@@ -381,6 +407,22 @@ onBeforeUnmount(() => {
       @input="handleSourceInput"
     ></textarea>
     <editor-content v-show="!isSourceMode" :editor="editor" class="editor-content" />
+
+    <div v-if="showMarkdownModal" class="md-import-overlay" @click.self="showMarkdownModal = false">
+      <div class="md-import-modal">
+        <div class="md-import-title">导入 Markdown</div>
+        <p class="md-import-tip">把 AI 生成的 Markdown 原文粘进来，点「导入」自动转成带格式的内容，插入到光标处。</p>
+        <textarea
+          v-model="markdownInput"
+          class="md-import-textarea"
+          placeholder="# 标题&#10;- 列表项&#10;**加粗** 与 [链接](https://...)"
+        ></textarea>
+        <div class="md-import-actions">
+          <button type="button" class="md-import-cancel" @click="showMarkdownModal = false">取消</button>
+          <button type="button" class="md-import-confirm" @click="importMarkdown">导入</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -407,6 +449,38 @@ onBeforeUnmount(() => {
 
 .toolbar-divider {
   @apply mx-1 h-6 w-px shrink-0 bg-border;
+}
+
+.md-import-overlay {
+  @apply fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4;
+}
+
+.md-import-modal {
+  @apply w-full max-w-2xl rounded-xl border border-border bg-background p-5 shadow-2xl;
+}
+
+.md-import-title {
+  @apply text-lg font-semibold text-foreground;
+}
+
+.md-import-tip {
+  @apply mt-1 text-xs text-muted-foreground;
+}
+
+.md-import-textarea {
+  @apply mt-3 w-full min-h-[260px] rounded-lg border border-border bg-muted/10 p-3 font-mono text-sm text-foreground resize-y focus:outline-none focus:ring-1 focus:ring-primary;
+}
+
+.md-import-actions {
+  @apply mt-4 flex justify-end gap-2;
+}
+
+.md-import-cancel {
+  @apply rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted;
+}
+
+.md-import-confirm {
+  @apply rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90;
 }
 
 .editor-toolbar.is-source-mode .toolbar-btn:not(.code-mode-btn) {
