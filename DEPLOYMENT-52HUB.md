@@ -27,3 +27,14 @@
 
 - Do not push directly to upstream `origin`.
 - Rollback: restore the `/opt/dujiao-next/web` backup or redeploy the previous `dist` version.
+
+## Local v1.2.2 Evaluation Branch
+
+- Worktree: `/Users/Apple/52hub-source-hardening/worktrees/dujiao-next-admin-v1.2.2-52hub`
+- Branch: `52hub/v1.2.2-admin-hardening`
+- Upstream baseline: `v1.2.2`
+- Current HEAD: `d497e59 brand(admin): keep AI Kaitong branding on v1.2.2`
+- Local custom version: `1.2.2-52hub.1`
+- Preserved customizations: AI开通 Admin branding, login/sidebar footer GitHub link removal, after-sales hidden-list setting.
+- Verification: `npm run build` passed on 2026-06-20 using a temporary `node_modules` symlink; build artifact is archived under `/Users/Apple/52hub-source-hardening/backups/local-run-artifacts-20260620-212750/`.
+- Production status: not deployed.

@@ -37,6 +37,16 @@ git status --short
 - private remote：`https://github.com/yaajie/52hub-admin-private`（已同步）
 - working tree：以 `git status --short` 为准；文档交接更新后应保持 clean 并 push 到 private
 
+本地 v1.2.2 预构建分支（未上线）：
+
+- worktree：`/Users/Apple/52hub-source-hardening/worktrees/dujiao-next-admin-v1.2.2-52hub`
+- 分支：`52hub/v1.2.2-admin-hardening`
+- 基线：上游 `v1.2.2`
+- HEAD：`d497e59 brand(admin): keep AI Kaitong branding on v1.2.2`
+- 保留补丁：`3372054` 售后保障隐藏名单开关、AI开通 Admin 品牌、`package.json` 版本 `1.2.2-52hub.1`
+- 验证：`npm run build` 通过；构建产物已移动到 `/Users/Apple/52hub-source-hardening/backups/local-run-artifacts-20260620-212750/dujiao-next-admin-v1.2.2-52hub-dist`
+- 状态：只做本地评估，未部署生产；后续生产升级前必须重新预检生产是否有热修。
+
 最近一次生产上线：
 
 - 时间：2026-06-20
