@@ -1,7 +1,7 @@
 {
   "name": "admin-web",
   "private": true,
-  "version": "1.2.2-52hub.1",
+  "version": "1.2.2-aikaitong.1",
   "type": "module",
   "scripts": {
     "dev": "vite --port 5174",
