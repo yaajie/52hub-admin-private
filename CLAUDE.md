@@ -31,7 +31,7 @@ git status --short
 ## 当前仓库快照（每次 commit 后必须更新此块）
 
 - 分支：`52hub/v1.0.2-admin-hardening`
-- **最新业务代码 commit：`a95c824 52hub: upgrade admin backend console to v1.2.1`**（最新交接文档 commit 以 `git log -1` 为准）
+- **最新业务代码 commit：`4aa2848 brand(admin): sync aikaitong admin branding`**（最新交接文档 commit 以 `git log -1` 为准）
 - 上游基线：`v1.2.1`
 - tag：`v1.0.2-52hub-admin-001`
 - private remote：`https://github.com/yaajie/52hub-admin-private`（已同步）
@@ -39,13 +39,13 @@ git status --short
 
 最近一次生产上线：
 
-- 时间：2026-06-04
-- 范围：admin 静态文件 + API 容器
-- admin commit：`a95c824 52hub: upgrade admin backend console to v1.2.1`
-- API commit：`e058f7a 52hub: upgrade api to v1.2.1 preserving sort order`
-- 生产备份：`/opt/dujiao-next/backups/pre-backend-upgrade-20260604-061527`
+- 时间：2026-06-20
+- 范围：admin 静态文件品牌源码回灌与重建部署；未动 user/API/数据库/OpenResty/容器
+- admin commit：`4aa2848 brand(admin): sync aikaitong admin branding`
+- 生产备份：`/opt/dujiao-next/web/admin.pre-brand-sync-20260620-204725`
 - admin 部署路径：`/opt/dujiao-next/web/admin/`
-- API 镜像：compose tag `dujiaonext/api:v1.0.2-52hub-sortorder` 已指向 v1.2.1 构建镜像 id `sha256:a457c1b96766440240ad78ab4999739ea808e31d1afc06605b7da042bd5c75e3`
+- 验证：`https://ht.aikaitong.com/` 返回 `HTTP/2 200`；公网和服务器本机入口 `<title>AI开通 Admin</title>`；生产静态内容 `AI开通=18`、`AI Kaitong=6`、`52Hub=0`；`dujiaonext-admin` 容器仍 `Up 5 days`
+- 上一次 API 容器上线：`e058f7a 52hub: upgrade api to v1.2.1 preserving sort order`；compose tag `dujiaonext/api:v1.0.2-52hub-sortorder` 已指向 v1.2.1 构建镜像 id `sha256:a457c1b96766440240ad78ab4999739ea808e31d1afc06605b7da042bd5c75e3`
 
 ## 2026-06-12 生产迁移状态
 
@@ -53,8 +53,8 @@ git status --short
 - 当前主站 API：`https://aikaitong.com/api`
 - 旧主域：`https://52hub.org` / `https://www.52hub.org` 301 到 `https://aikaitong.com/`
 - 中转业务：`ai.52hub.org` / `relay.52hub.org` 保留不迁移。
-- 生产后台 favicon/logo/标题/侧边栏已热修为 AI开通；备份见 `/opt/dujiao-next/backups/admin-brand-assets-20260611-235000/`、`/opt/dujiao-next/backups/admin-brand-text-20260611-235236/`、`/opt/dujiao-next/backups/brand-static-cleanup-20260612-005927/`。
-- 注意：本仓库源码若仍有旧品牌静态文案，后续重建 admin 前必须先把生产热修回灌源码，再构建部署，避免覆盖生产品牌。
+- 生产后台 favicon/logo/标题/侧边栏/footer/i18n 品牌已于 2026-06-20 从源码回灌并重建部署为 AI开通；本轮备份 `/opt/dujiao-next/web/admin.pre-brand-sync-20260620-204725`，旧热修备份见 `/opt/dujiao-next/backups/admin-brand-assets-20260611-235000/`、`/opt/dujiao-next/backups/admin-brand-text-20260611-235236/`、`/opt/dujiao-next/backups/brand-static-cleanup-20260612-005927/`。
+- 注意：后续重建 admin 前仍需先只读比对生产是否存在新的热修；截至 2026-06-20，本仓库源码已包含 AI开通品牌回灌。
 
 ---
 
