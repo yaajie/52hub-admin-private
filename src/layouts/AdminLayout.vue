@@ -684,7 +684,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="!sidebarCollapsed" class="text-xs text-muted-foreground mt-1">{{ t('admin.layout.controlRoom') }}</div>
           <div v-if="sidebarCollapsed" class="flex items-center justify-center">
-            <img src="/icon.svg" alt="52Hub" class="h-7 w-7" />
+            <img src="/icon.svg" alt="AI开通" class="h-7 w-7" />
           </div>
         </div>
         <div v-if="!sidebarCollapsed" class="px-3 pb-2">
@@ -770,7 +770,7 @@ onBeforeUnmount(() => {
         <!-- Collapse toggle button -->
         <div class="border-t border-border">
           <div v-if="!sidebarCollapsed" class="px-6 py-3 text-[11px] text-muted-foreground space-y-1">
-            <p>© {{ new Date().getFullYear() }} 52Hub <span v-if="appVersion" class="text-muted-foreground/70">{{ appVersion }}</span></p>
+            <p>© {{ new Date().getFullYear() }} AI开通 <span v-if="appVersion" class="text-muted-foreground/70">{{ appVersion }}</span></p>
           </div>
           <button
             type="button"
@@ -848,7 +848,7 @@ onBeforeUnmount(() => {
             </div>
           </nav>
           <div class="px-6 py-4 border-t border-border text-[11px] text-muted-foreground space-y-1">
-            <p>© {{ new Date().getFullYear() }} 52Hub <span v-if="appVersion" class="text-muted-foreground/70">{{ appVersion }}</span></p>
+            <p>© {{ new Date().getFullYear() }} AI开通 <span v-if="appVersion" class="text-muted-foreground/70">{{ appVersion }}</span></p>
           </div>
         </SheetContent>
       </Sheet>

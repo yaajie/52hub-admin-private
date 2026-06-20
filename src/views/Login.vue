@@ -279,7 +279,7 @@ onUnmounted(() => {
         </CardContent>
       </Card>
       <p class="mt-4 text-center text-xs text-muted-foreground">
-        © {{ new Date().getFullYear() }} 52Hub. 保留所有权利
+        © {{ new Date().getFullYear() }} AI开通. 保留所有权利
       </p>
     </div>
   </div>
